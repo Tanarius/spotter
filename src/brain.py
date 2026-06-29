@@ -149,8 +149,12 @@ class Brain:
     def _build_system_prompt(self, session: Session) -> str:
         """Load the system prompt template and hydrate workspace facts into it."""
         template = self._config.prompts.get("system_prompt", "")
+        # Only core facts go in the system prompt — non-core facts stay reachable
+        # on demand via query_memory scope=facts (FTS5, unfiltered).
         facts = session.scalars(
-            select(WorkspaceFact).order_by(WorkspaceFact.category, WorkspaceFact.id)
+            select(WorkspaceFact)
+            .where(WorkspaceFact.is_core == 1)
+            .order_by(WorkspaceFact.category, WorkspaceFact.id)
         ).all()
         # str.replace (not str.format) so literal braces in the prompt are safe.
         return template.replace("{workspace_facts}", _format_facts(facts))

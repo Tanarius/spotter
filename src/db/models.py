@@ -103,13 +103,22 @@ class WorkspaceFact(Base):
     __tablename__ = "workspace_facts"
     __table_args__ = (
         Index("idx_facts_category", "category"),
+        # Stable upsert identity for seeded facts (see seed/context.yaml). The
+        # matching index name is created by apply_migrations() on existing DBs.
+        Index("idx_facts_key", "key", unique=True),
         {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    category: Mapped[str]  # project | preference | pattern | context | phase2_candidate
+    # Stable key for seed upserts; NULL for facts created at runtime. Unique among
+    # keyed rows (SQLite treats multiple NULLs as distinct).
+    key: Mapped[str | None]
+    category: Mapped[str]  # context | preference | pattern | project | priority | phase2_candidate
     content: Mapped[str]
     confidence: Mapped[float] = mapped_column(server_default=text("1.0"))
+    # 1 = always injected into the system prompt; 0 = reachable only via
+    # query_memory. Stored as the same INTEGER 0/1 flag pattern as is_next etc.
+    is_core: Mapped[int] = mapped_column(server_default=text("0"))
     last_referenced: Mapped[str | None]
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
     updated_at: Mapped[str] = mapped_column(server_default=_NOW)

@@ -47,3 +47,17 @@ def resolve_project(session: Session, name: str | None) -> Project | None:
         .where(Project.status == "active")
         .order_by(Project.priority.desc(), Project.id)
     )
+
+
+def resolve_project_id(session: Session, name: str | None) -> int | None:
+    """Resolve a project id by name, or ``None`` when the name is absent/unknown.
+
+    Unlike :func:`resolve_project`, this does **not** fall back to a default
+    project — a blocker or intent with no stated project stays unlinked rather
+    than being silently attached to Simmer.
+    """
+    if not name:
+        return None
+    return session.scalar(
+        select(Project.id).where(func.lower(Project.name) == name.strip().lower())
+    )

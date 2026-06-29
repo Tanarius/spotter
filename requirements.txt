@@ -1,0 +1,8 @@
+anthropic>=0.40.0
+python-telegram-bot[ext]>=21.0
+sqlalchemy>=2.0
+pyyaml
+python-dotenv
+apscheduler>=3.10
+requests
+groq

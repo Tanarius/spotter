@@ -1,0 +1,143 @@
+[
+  {
+    "name": "capture_item",
+    "description": "Save a thought, link, follow-up, idea, or anything the user dumps. Use this BY DEFAULT whenever the user shares something that isn't a direct question or instruction. Never make the user decide where to put a thought - just capture it. The assistant can re-categorize captured items later.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "The raw content to capture. Preserve the user's wording when possible."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["thought", "followup", "idea", "link", "task_candidate"],
+          "description": "Best-guess category. Default to 'thought' if unclear."
+        },
+        "project_name": {
+          "type": "string",
+          "description": "Project this relates to, if obvious. Omit if unclear."
+        }
+      },
+      "required": ["content", "category"]
+    }
+  },
+  {
+    "name": "surface_next_action",
+    "description": "Return the next concrete action on a project, specified at the level of 'open this file, your cursor here, type these three words.' Use when the user asks what to work on, or when they're stuck. If the user says the action is still too big, call again with a smaller_than parameter to shrink it further.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "Which project. Defaults to highest-priority active project (likely Simmer) if omitted."
+        },
+        "smaller_than": {
+          "type": "string",
+          "description": "Optional: if a previous suggestion was too big, describe what was suggested so this call returns something smaller."
+        }
+      }
+    }
+  },
+  {
+    "name": "log_blocker",
+    "description": "Record that the user is stuck on something specific. Critical for stall detection - blockers are how Spotter knows the user is avoiding something vs. just busy.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string", "description": "What is blocked." },
+        "reason": { "type": "string", "description": "Why it's blocked, in the user's words if available." },
+        "project_name": { "type": "string", "description": "Which project this blocker is on." },
+        "task_id": { "type": "integer", "description": "Optional: task ID this blocker is attached to." }
+      },
+      "required": ["description"]
+    }
+  },
+  {
+    "name": "query_memory",
+    "description": "Search captured items, tasks, blockers, or workspace facts. Use this when the user references something past ('what was that thing about X', 'did I mention Y', 'where did we leave off on Z').",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search keywords. FTS5 is used under the hood - keep queries focused on content words."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["captured", "tasks", "blockers", "facts", "all"],
+          "description": "Which memory layer to search. Use 'all' if uncertain."
+        },
+        "limit": { "type": "integer", "description": "Max results to return. Default 5." }
+      },
+      "required": ["query", "scope"]
+    }
+  },
+  {
+    "name": "update_workspace_doc",
+    "description": "Write to the Google Doc workspace. The doc has six sections: Today, Captured This Week, Active Tasks, Blockers, Done This Week, Long-term Context. Use this when something needs to be persistent and human-readable, separate from the database.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "section": {
+          "type": "string",
+          "enum": ["today", "captured", "tasks", "blockers", "done", "context"],
+          "description": "Which section of the doc to update."
+        },
+        "action": {
+          "type": "string",
+          "enum": ["append", "replace_section"],
+          "description": "Append a new line/bullet to the section, or replace the whole section."
+        },
+        "content": { "type": "string", "description": "The text to write. Plain text, one item per line." }
+      },
+      "required": ["section", "action", "content"]
+    }
+  },
+  {
+    "name": "draft_message",
+    "description": "Generate a draft email, Slack message, or text message for the user to review and send. Use this whenever the user mentions needing to reply, send, or message someone. ALWAYS draft - don't just remind. Present the draft and ask for approval.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "message_type": {
+          "type": "string",
+          "enum": ["email", "slack", "text", "other"]
+        },
+        "recipient": { "type": "string", "description": "Who the message is to. Name or relationship if known." },
+        "purpose": { "type": "string", "description": "What the user wants to communicate." },
+        "tone": { "type": "string", "description": "Tone preference. Default: direct and brief, matching the user's voice." },
+        "background": { "type": "string", "description": "Any context the message needs to reference." }
+      },
+      "required": ["message_type", "recipient", "purpose"]
+    }
+  },
+  {
+    "name": "schedule_intent",
+    "description": "Capture a scheduling intent - something the user wants to schedule, deadline they're committing to, or event they want to remember. V1 does NOT touch Google Calendar - this just records the intent. The user will see captured intents in the morning brief.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string", "description": "What's being scheduled. E.g. 'lunch with Sam', 'Simmer launch'." },
+        "when_text": { "type": "string", "description": "When, in the user's words. E.g. 'next Tuesday afternoon', 'before end of month'." },
+        "duration_text": { "type": "string", "description": "How long, if specified." },
+        "attendees": { "type": "string", "description": "Other people involved, comma-separated." },
+        "project_name": { "type": "string", "description": "Related project, if any." }
+      },
+      "required": ["description"]
+    }
+  },
+  {
+    "name": "name_the_stall",
+    "description": "Call this when the user appears to be stalling on a project - especially Simmer. Signs: keeps capturing new ideas instead of doing the next step, has been avoiding the same concrete task for multiple days, brings up cosmetic concerns when launch is the actual blocker, or tries to start a new project while an existing one is at 70-80% completion. Be direct in your response. Do not soften.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_name": { "type": "string", "description": "Which project the user is stalling on." },
+        "avoided_step": { "type": "string", "description": "What specific step they're avoiding. Be concrete." },
+        "pattern_observed": { "type": "string", "description": "What behavior tipped you off. E.g. 'asking about Chef Mode design while landing page is unfinished'." }
+      },
+      "required": ["project_name", "avoided_step", "pattern_observed"]
+    }
+  }
+]

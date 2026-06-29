@@ -56,8 +56,8 @@ class Config:
     # Secrets / identity
     telegram_bot_token: str
     telegram_allowed_user_id: int
-    # Optional until the step that uses them: Anthropic at Step 4, Groq at Step 6.
-    # Loaded if present; absence does not fail boot.
+    # Anthropic is required as of Step 4 (the brain calls Claude). Groq stays
+    # optional until Step 6; absence does not fail boot.
     anthropic_api_key: str
     groq_api_key: str
 
@@ -97,7 +97,7 @@ def load_config() -> Config:
     return Config(
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
         telegram_allowed_user_id=_require_int("TELEGRAM_ALLOWED_USER_ID"),
-        anthropic_api_key=_optional("ANTHROPIC_API_KEY"),
+        anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),
         db_path=db_path,

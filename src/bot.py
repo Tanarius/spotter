@@ -1,12 +1,14 @@
 """Telegram bot wiring for Spotter.
 
-Step 2 scope: long-polling bot with a single message handler that echoes back
-``received: <text>``. Access is restricted to the single allow-listed user; any
-other sender is silently ignored.
+Step 4 scope: long-polling bot whose single message handler routes each
+allow-listed text message through the :class:`Brain` and replies with Claude's
+answer. Access is restricted to the single allow-listed user; any other sender
+is silently ignored.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from telegram import Update
@@ -17,16 +19,18 @@ from telegram.ext import (
     filters,
 )
 
+from .brain import Brain
 from .config import Config
 
 logger = logging.getLogger(__name__)
 
 
-def build_application(config: Config) -> Application:
+def build_application(config: Config, brain: Brain) -> Application:
     """Construct the Telegram ``Application`` with handlers wired in."""
     application = Application.builder().token(config.telegram_bot_token).build()
-    # Stash config on bot_data so handlers can reach it without globals.
+    # Stash dependencies on bot_data so handlers can reach them without globals.
     application.bot_data["config"] = config
+    application.bot_data["brain"] = brain
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message)
     )
@@ -34,8 +38,9 @@ def build_application(config: Config) -> Application:
 
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Echo allow-listed text messages; silently ignore everyone else."""
+    """Route allow-listed text through the brain; silently ignore everyone else."""
     config: Config = context.bot_data["config"]
+    brain: Brain = context.bot_data["brain"]
 
     user = update.effective_user
     if user is None or user.id != config.telegram_allowed_user_id:
@@ -46,11 +51,14 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if message is None or message.text is None:
         return
 
-    await message.reply_text(f"received: {message.text}")
+    # Brain.respond is synchronous (blocking API + DB calls); run it off the
+    # event loop so long-polling stays responsive.
+    reply = await asyncio.to_thread(brain.respond, message.text)
+    await message.reply_text(reply)
 
 
-def run_bot(config: Config) -> None:
+def run_bot(config: Config, brain: Brain) -> None:
     """Start long polling. Blocks until the process is interrupted."""
-    application = build_application(config)
+    application = build_application(config, brain)
     logger.info("Starting Telegram long polling")
     application.run_polling()

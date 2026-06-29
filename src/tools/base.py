@@ -12,9 +12,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import Config
+from ..db.models import Project
 
 
 @dataclass(frozen=True)
@@ -27,3 +29,21 @@ class ToolContext:
 
 # A tool handler: (context, parsed tool input) -> result text for Claude.
 ToolHandler = Callable[[ToolContext, dict[str, Any]], str]
+
+
+def resolve_project(session: Session, name: str | None) -> Project | None:
+    """Resolve a project for a tool call.
+
+    With a ``name``, match it case-insensitively (``None`` if no such project).
+    Without one, fall back to the highest-priority active project — Spotter's
+    default focus, which is Simmer.
+    """
+    if name:
+        return session.scalar(
+            select(Project).where(func.lower(Project.name) == name.strip().lower())
+        )
+    return session.scalar(
+        select(Project)
+        .where(Project.status == "active")
+        .order_by(Project.priority.desc(), Project.id)
+    )

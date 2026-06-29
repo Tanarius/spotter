@@ -1,10 +1,10 @@
 """Spotter tool handlers and the name -> handler dispatch registry.
 
-Waves 1-3 implement capture_item, query_memory, surface_next_action,
-name_the_stall, log_blocker, and schedule_intent. The remaining two tools in
-tools_schema.json (draft_message, update_workspace_doc) are still passed to the
-API but have no handler yet; the brain returns a graceful "not implemented"
-tool_result if Claude calls one.
+Waves 1-4 implement seven of the eight tools: capture_item, query_memory,
+surface_next_action, name_the_stall, log_blocker, schedule_intent, and
+draft_message. update_workspace_doc is intentionally deferred (it stays a passed-
+to-the-API stub until the optional Google Docs step); the brain returns a
+graceful "not available yet" tool_result if Claude calls it.
 """
 
 from __future__ import annotations
@@ -12,12 +12,13 @@ from __future__ import annotations
 from .base import ToolContext, ToolHandler
 from .blocker import log_blocker
 from .capture import capture_item
+from .draft import draft_message
 from .intent import schedule_intent
 from .memory import query_memory
 from .next_action import surface_next_action
 from .stall import name_the_stall
 
-# name -> handler. Wave 1 + Wave 2 + Wave 3 tools are registered.
+# name -> handler. Seven of eight tools registered; update_workspace_doc deferred.
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "capture_item": capture_item,
     "query_memory": query_memory,
@@ -25,6 +26,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "name_the_stall": name_the_stall,
     "log_blocker": log_blocker,
     "schedule_intent": schedule_intent,
+    "draft_message": draft_message,
 }
 
 __all__ = ["TOOL_HANDLERS", "ToolContext", "ToolHandler"]

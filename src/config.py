@@ -7,6 +7,7 @@ or open ``prompts.yaml`` directly — everything flows through ``load_config()``
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,10 +70,17 @@ class Config:
 
     # Loaded artifacts
     prompts: dict[str, Any]
+    # Anthropic tool definitions, loaded verbatim from tools_schema.json and
+    # passed straight to the Messages API.
+    tools: list[dict[str, Any]]
 
     @property
     def prompts_path(self) -> Path:
         return ROOT_DIR / "prompts.yaml"
+
+    @property
+    def tools_path(self) -> Path:
+        return ROOT_DIR / "tools_schema.json"
 
 
 def load_config() -> Config:
@@ -89,6 +97,12 @@ def load_config() -> Config:
     with prompts_path.open("r", encoding="utf-8") as fh:
         prompts = yaml.safe_load(fh) or {}
 
+    tools_path = ROOT_DIR / "tools_schema.json"
+    if not tools_path.exists():
+        raise ConfigError(f"tools_schema.json not found at {tools_path}")
+    with tools_path.open("r", encoding="utf-8") as fh:
+        tools = json.load(fh)
+
     db_path_raw = _get("DB_PATH", "data/spotter.db")
     db_path = Path(db_path_raw)
     if not db_path.is_absolute():
@@ -104,4 +118,5 @@ def load_config() -> Config:
         brief_time=_get("BRIEF_TIME", "07:00"),
         timezone=_get("TIMEZONE", "America/Chicago"),
         prompts=prompts,
+        tools=tools,
     )

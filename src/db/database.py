@@ -25,7 +25,9 @@ from .models import FTS_STATEMENTS, Base, Project, Task, WorkspaceFact
 
 logger = logging.getLogger(__name__)
 
-# Single source of truth for seeded projects + facts.
+# Single source of truth for seeded projects + facts. This file holds personal
+# context and is gitignored; copy seed/context.example.yaml to seed/context.yaml
+# and fill it in. seed_context() always loads the real file below at runtime.
 SEED_PATH: Path = ROOT_DIR / "seed" / "context.yaml"
 
 

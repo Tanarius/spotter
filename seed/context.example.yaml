@@ -1,0 +1,81 @@
+# seed/context.example.yaml
+# TEMPLATE — copy this to seed/context.yaml and fill in your real content:
+#     cp seed/context.example.yaml seed/context.yaml      (Unix)
+#     Copy-Item seed/context.example.yaml seed/context.yaml   (PowerShell)
+#
+# seed/context.yaml holds personal context and is gitignored; THIS example is the
+# tracked, shareable structure. Spotter loads seed/context.yaml at runtime
+# (seed_context in src/db/database.py), upserting it on every boot.
+#
+# Re-run safe: projects upsert by `name`, facts upsert by stable `key`.
+# NEVER change or reuse a fact `key` once assigned — edit content/category instead.
+
+projects:
+  - name: ProjectOne
+    status: active            # active | paused | done
+    priority: 10              # integer, higher = more important
+    description: >-
+      One-line description of your highest-priority project.
+    next_action: >-
+      The single concrete next step — file, cursor, first words to type.
+
+  - name: ProjectTwo
+    status: active
+    priority: 5
+    description: >-
+      One-line description of a second project.
+    next_action: >-
+      The next concrete step, or omit this line if there isn't one yet.
+
+facts:
+  # --- core facts: ALWAYS injected into the system prompt. Keep these few. ---
+  - key: user.role
+    category: context
+    content: >-
+      Infrastructure engineer moving into AI / agent work.
+    is_core: true
+    confidence: 1.0
+
+  - key: user.goals
+    category: context
+    content: >-
+      <your current goals — e.g. job search status and target roles>
+    is_core: true
+    confidence: 1.0
+
+  - key: pattern.primary
+    category: pattern
+    content: >-
+      <your top recurring pattern to watch for, e.g. stalling at 70-80% completion>
+    is_core: true
+    confidence: 1.0
+
+  - key: prefs.tone
+    category: preference
+    content: >-
+      Wants the assistant blunt and direct. No cheerleading. Name avoidance out
+      loud. Shrink tasks rather than motivate.
+    is_core: true
+    confidence: 1.0
+
+  - key: priority.now
+    category: priority
+    content: >-
+      <your current priorities this month, in order>
+    is_core: true
+    confidence: 1.0
+
+  # --- non-core: stored + searchable via query_memory, NOT always in-prompt ---
+  - key: user.context.personal
+    category: context
+    content: >-
+      <any personal context the assistant should recall but not keep in every prompt>
+    is_core: false
+    confidence: 1.0
+
+  - key: phase2.idea
+    category: phase2_candidate
+    content: >-
+      <a deferred / future idea to keep but not act on yet>
+    is_core: false
+    confidence: 1.0

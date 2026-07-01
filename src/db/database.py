@@ -98,13 +98,24 @@ def apply_migrations(engine: Engine) -> None:
         )
 
 
-def load_seed(path: Path | None = None) -> dict:
-    """Parse the seed YAML file into a dict (``{}`` if empty)."""
+def load_seed(path: Path | None = None, env_yaml: str | None = None) -> dict:
+    """Load seed content, preferring the file, then the env-var fallback.
+
+    Decision order:
+      1. ``seed/context.yaml`` if it exists — the file always wins (local dev).
+      2. ``env_yaml`` (the SEED_CONTEXT_YAML string) — used on Railway, where the
+         gitignored file is absent.
+      3. Otherwise a clear error: neither source is available.
+    """
     seed_path = path or SEED_PATH
-    if not seed_path.exists():
-        raise FileNotFoundError(f"Seed file not found at {seed_path}")
-    with seed_path.open("r", encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+    if seed_path.exists():
+        with seed_path.open("r", encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    if env_yaml:
+        return yaml.safe_load(env_yaml) or {}
+    raise FileNotFoundError(
+        f"No seed found: {seed_path} does not exist and SEED_CONTEXT_YAML is unset."
+    )
 
 
 def seed_context(session: Session, seed: dict) -> SeedResult:
@@ -187,17 +198,21 @@ def _clean(value: object) -> str | None:
     return text_value or None
 
 
-def initialize_database(db_path: Path) -> tuple[Engine, int]:
-    """Ensure the database exists, is migrated, and is seeded from the file.
+def initialize_database(
+    db_path: Path, seed_yaml: str | None = None
+) -> tuple[Engine, int]:
+    """Ensure the database exists, is migrated, and is seeded.
 
-    Returns the live engine plus the current project count.
+    ``seed_yaml`` is the SEED_CONTEXT_YAML fallback used when the seed file is
+    absent (Railway); the file takes precedence when present. Returns the live
+    engine plus the current project count.
     """
     fresh = not db_path.exists()
     engine = create_db_engine(db_path)
     apply_schema(engine)
     apply_migrations(engine)
 
-    seed = load_seed()
+    seed = load_seed(env_yaml=seed_yaml)
     with Session(engine) as session, session.begin():
         result = seed_context(session, seed)
         project_count = session.scalar(select(func.count()).select_from(Project)) or 0

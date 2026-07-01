@@ -276,7 +276,7 @@ def _utc_now_str(moment: datetime | None = None) -> str:
 # ---------------------------------------------------------------------------
 async def _run_once() -> None:
     config = load_config()
-    engine, _ = initialize_database(config.db_path)
+    engine, _ = initialize_database(config.db_path, config.seed_context_yaml)
     session_factory = make_session_factory(engine)
     client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     service = BriefService(config, client, session_factory)

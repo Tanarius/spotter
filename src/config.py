@@ -68,6 +68,10 @@ class Config:
     brief_time: str
     timezone: str
 
+    # Deployment fallback: seed content when seed/context.yaml is absent (e.g. on
+    # Railway, where the file is gitignored). Empty string when the file is used.
+    seed_context_yaml: str
+
     # Loaded artifacts
     prompts: dict[str, Any]
     # Anthropic tool definitions, loaded verbatim from tools_schema.json and
@@ -117,6 +121,7 @@ def load_config() -> Config:
         db_path=db_path,
         brief_time=_get("BRIEF_TIME", "07:00"),
         timezone=_get("TIMEZONE", "America/Chicago"),
+        seed_context_yaml=_optional("SEED_CONTEXT_YAML"),
         prompts=prompts,
         tools=tools,
     )

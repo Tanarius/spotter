@@ -25,7 +25,7 @@ def main() -> None:
 
     config = load_config()
 
-    engine, project_count = initialize_database(config.db_path)
+    engine, project_count = initialize_database(config.db_path, config.seed_context_yaml)
     session_factory = make_session_factory(engine)
     logger.info("Database ready with %d seeded projects", project_count)
 

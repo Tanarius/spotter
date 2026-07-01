@@ -25,7 +25,7 @@ def main() -> None:
     )
 
     config = load_config()
-    engine, project_count = initialize_database(config.db_path)
+    engine, project_count = initialize_database(config.db_path, config.seed_context_yaml)
 
     print(f"\nDatabase initialized at {config.db_path}")
     print(f"Seeded projects: {project_count}\n")

@@ -20,6 +20,7 @@ import anthropic
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from .clock import time_context
 from .config import Config
 from .db.models import ConversationLogEntry, WorkspaceFact
 from .tools import TOOL_HANDLERS, ToolContext
@@ -157,7 +158,10 @@ class Brain:
             .order_by(WorkspaceFact.category, WorkspaceFact.id)
         ).all()
         # str.replace (not str.format) so literal braces in the prompt are safe.
-        return template.replace("{workspace_facts}", _format_facts(facts))
+        hydrated = template.replace("{workspace_facts}", _format_facts(facts))
+        # Appended (not templated) so time context is guaranteed on every call
+        # even if the prompt template changes.
+        return f"{hydrated}\n\n{time_context(self._config.timezone)}"
 
     def _load_history(self, session: Session) -> list[dict[str, str]]:
         """Return up to the last ``_HISTORY_LIMIT`` turns, oldest first."""

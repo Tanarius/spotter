@@ -24,6 +24,7 @@ import telegram
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from .clock import time_context
 from .config import Config, load_config
 from .db import initialize_database, make_session_factory
 from .db.models import Blocker, CapturedItem, DailyBrief, Project, Task, WorkspaceFact
@@ -249,7 +250,10 @@ def build_brief_system(config: Config, session: Session) -> str:
         .order_by(WorkspaceFact.category, WorkspaceFact.id)
     ).all()
     facts_text = "\n".join(f"- ({f.category}) {f.content}" for f in facts) or "(none)"
-    return _BRIEF_SYSTEM_TEMPLATE.replace("{facts}", facts_text)
+    hydrated = _BRIEF_SYSTEM_TEMPLATE.replace("{facts}", facts_text)
+    # Same per-call time block as the chat brain: the brief is the most
+    # time-sensitive thing Spotter writes. {today} in the user prompt stays.
+    return f"{hydrated}\n\n{time_context(config.timezone)}"
 
 
 def render_morning_prompt(config: Config, inputs: BriefInputs) -> str:

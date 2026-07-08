@@ -105,7 +105,15 @@ def load_config() -> Config:
     if not tools_path.exists():
         raise ConfigError(f"tools_schema.json not found at {tools_path}")
     with tools_path.open("r", encoding="utf-8") as fh:
-        tools = json.load(fh)
+        raw_tools = json.load(fh)
+    # Entries flagged "deferred": true stay in the file (e.g. the not-yet-built
+    # update_workspace_doc Google Docs tool) but are never offered to the model.
+    # The flag itself is stripped from active entries — it isn't an API field.
+    tools = [
+        {key: value for key, value in tool.items() if key != "deferred"}
+        for tool in raw_tools
+        if not tool.get("deferred", False)
+    ]
 
     db_path_raw = _get("DB_PATH", "data/spotter.db")
     db_path = Path(db_path_raw)

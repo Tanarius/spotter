@@ -2,9 +2,11 @@
 
 Waves 1-4 implement seven of the eight tools: capture_item, query_memory,
 surface_next_action, name_the_stall, log_blocker, schedule_intent, and
-draft_message. update_workspace_doc is intentionally deferred (it stays a passed-
-to-the-API stub until the optional Google Docs step); the brain returns a
-graceful "not available yet" tool_result if Claude calls it.
+draft_message. update_workspace_doc is intentionally deferred: it stays defined in
+tools_schema.json with "deferred": true, which keeps it OUT of the tool list the
+model receives (see load_config) until the optional Google Docs step. If a call
+somehow arrives anyway, the brain still returns a graceful "not available yet"
+tool_result.
 """
 
 from __future__ import annotations

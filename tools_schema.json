@@ -74,6 +74,7 @@
     }
   },
   {
+    "deferred": true,
     "name": "update_workspace_doc",
     "description": "Write to the Google Doc workspace. The doc has six sections: Today, Captured This Week, Active Tasks, Blockers, Done This Week, Long-term Context. Use this when something needs to be persistent and human-readable, separate from the database.",
     "input_schema": {

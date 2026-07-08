@@ -140,5 +140,33 @@
       },
       "required": ["project_name", "avoided_step", "pattern_observed"]
     }
+  },
+  {
+    "name": "update_task_status",
+    "description": "Update the status of an existing task or project when the user says something is finished, paused, waiting on someone/something, dropped, or should be reopened. Resolve the target from recent context: pass the numeric id when you have one (tool results show 'task #N'), otherwise pass the name — case-insensitive partial match is fine. If the result says multiple tasks match, retry with the exact id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "target_type": {
+          "type": "string",
+          "enum": ["task", "project"],
+          "description": "Whether to update a single task or a whole project."
+        },
+        "id": {
+          "type": "integer",
+          "description": "Exact task or project id, if known from recent context. Preferred over name."
+        },
+        "name": {
+          "type": "string",
+          "description": "Task title or project name to match. Required when id is omitted."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "in_progress", "done", "paused", "waiting", "dropped", "active"],
+          "description": "New status. Tasks: open | in_progress | done | paused | waiting | dropped. Projects: active | paused | done."
+        }
+      },
+      "required": ["target_type", "status"]
+    }
   }
 ]

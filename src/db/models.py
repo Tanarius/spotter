@@ -1,6 +1,6 @@
 """SQLAlchemy 2.x ORM models for Spotter's SQLite database.
 
-This is a faithful translation of ``schema.sql``. Every one of the nine real
+This is a faithful translation of ``schema.sql``. Every one of the ten real
 tables is expressed as a declarative model here. The two FTS5 virtual tables and
 their sync triggers cannot be expressed cleanly through the ORM, so they live as
 raw DDL in :data:`FTS_STATEMENTS` and are applied alongside ``create_all`` by the
@@ -141,6 +141,33 @@ class ConversationLogEntry(Base):
     tokens_in: Mapped[int | None]
     tokens_out: Mapped[int | None]
     cost_cents: Mapped[float | None]
+    created_at: Mapped[str] = mapped_column(server_default=_NOW)
+
+
+class ScheduledTrigger(Base):
+    """Proactive time-based message: a one-shot reminder or a recurring check-in.
+
+    ``fire_at`` is UTC in SQLite CURRENT_TIMESTAMP format (``YYYY-MM-DD HH:MM:SS``)
+    so it compares apples-to-apples with every other timestamp in the DB.
+    ``message_or_prompt`` is sent literally when ``is_prompt`` is 0, otherwise
+    handed to Claude to generate the outgoing message.
+    """
+
+    __tablename__ = "scheduled_triggers"
+    __table_args__ = (
+        # The firing loop's hot path: pending rows ordered by due time.
+        Index("idx_triggers_pending", "status", "fire_at"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str]  # reminder | checkin | recurring
+    fire_at: Mapped[str]  # UTC, 'YYYY-MM-DD HH:MM:SS'
+    recurrence: Mapped[str | None]  # daily | weekly | NULL = one-shot
+    message_or_prompt: Mapped[str]
+    is_prompt: Mapped[int] = mapped_column(server_default=text("0"))  # 1 = generate via Claude
+    related_project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    status: Mapped[str] = mapped_column(server_default=text("'pending'"))  # pending | fired | cancelled
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
 
 

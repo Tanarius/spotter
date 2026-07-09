@@ -96,6 +96,16 @@ def apply_migrations(engine: Engine) -> None:
         conn.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_key ON workspace_facts(key)"
         )
+        # scheduled_triggers itself is created by create_all when missing; this
+        # guard covers a DB created by an intermediate build without is_prompt.
+        trigger_columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(scheduled_triggers)")
+        }
+        if trigger_columns and "is_prompt" not in trigger_columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE scheduled_triggers ADD COLUMN is_prompt INTEGER NOT NULL DEFAULT 0"
+            )
+            logger.info("Migration: added scheduled_triggers.is_prompt")
 
 
 def load_seed(path: Path | None = None, env_yaml: str | None = None) -> dict:

@@ -79,6 +79,22 @@ CREATE TABLE blockers (
 
 CREATE INDEX idx_blockers_status ON blockers(status, project_id);
 
+-- Proactive time-based messages: one-shot reminders and recurring check-ins.
+-- fire_at is UTC in CURRENT_TIMESTAMP format; is_prompt=1 means message_or_prompt
+-- is a prompt for Claude rather than a literal message.
+CREATE TABLE scheduled_triggers (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind                TEXT NOT NULL,                    -- reminder | checkin | recurring
+    fire_at             TEXT NOT NULL,                    -- UTC 'YYYY-MM-DD HH:MM:SS'
+    recurrence          TEXT,                             -- daily | weekly | NULL = one-shot
+    message_or_prompt   TEXT NOT NULL,
+    is_prompt           INTEGER NOT NULL DEFAULT 0,       -- 1 = generate via Claude
+    related_project_id  INTEGER REFERENCES projects(id),
+    status              TEXT NOT NULL DEFAULT 'pending',  -- pending | fired | cancelled
+    created_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_triggers_pending ON scheduled_triggers(status, fire_at);
+
 -- ---------------------------------------------------------------------------
 -- Workspace facts — long-term persistent context (the "long-term memory" layer).
 -- ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ from .brief import BriefService
 from .config import load_config
 from .db import initialize_database, make_session_factory
 from .scheduler import SpotterScheduler
+from .triggers import TriggerService
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ def main() -> None:
     brain = Brain(config, client, session_factory)
     brief_service = BriefService(config, client, session_factory)
     scheduler = SpotterScheduler(config)
+    trigger_service = TriggerService(config, client, session_factory, scheduler)
 
     async def _post_init(application: Application) -> None:
         # The bot exists now, so bind the brief job to it and start the scheduler
@@ -45,7 +47,14 @@ def main() -> None:
                 logger.exception("Morning-brief job failed")
 
         scheduler.schedule_daily_brief(_brief_job)
+        trigger_service.bind_bot(application.bot)
+        registered, caught_up = trigger_service.register_pending()
         scheduler.start()
+        logger.info(
+            "Scheduled triggers: %d pending registered (%d past-due firing now)",
+            registered,
+            caught_up,
+        )
         logger.info(
             "Scheduler started; morning brief at %s %s",
             config.brief_time,

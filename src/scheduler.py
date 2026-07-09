@@ -1,4 +1,5 @@
-"""APScheduler wiring for Spotter's one scheduled job: the morning brief.
+"""APScheduler wiring for Spotter's scheduled work: the morning brief cron
+job and one-shot firings of DB-backed scheduled triggers.
 
 Runs an ``AsyncIOScheduler`` on the same event loop as python-telegram-bot's
 long-polling, so the daily brief fires without blocking message handling. The
@@ -11,11 +12,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from apscheduler.job import Job
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from .config import Config
 
@@ -27,7 +30,7 @@ _MISFIRE_GRACE_SECONDS = 3600
 
 
 class SpotterScheduler:
-    """Thin wrapper around AsyncIOScheduler for the daily-brief job."""
+    """Thin wrapper around AsyncIOScheduler for Spotter's scheduled jobs."""
 
     def __init__(self, config: Config) -> None:
         self._config = config
@@ -44,6 +47,33 @@ class SpotterScheduler:
             replace_existing=True,
             misfire_grace_time=_MISFIRE_GRACE_SECONDS,
         )
+
+    def schedule_trigger(
+        self,
+        trigger_id: int,
+        run_at: datetime,
+        callback: Callable[[int], Awaitable[None]],
+    ) -> Job:
+        """Register a one-shot firing of DB trigger ``trigger_id`` at ``run_at``.
+
+        ``run_at`` must be timezone-aware (UTC from the DB). Re-registering the
+        same trigger id replaces the existing job, which is what rescheduling a
+        recurring trigger wants.
+        """
+        return self._scheduler.add_job(
+            callback,
+            DateTrigger(run_date=run_at),
+            args=(trigger_id,),
+            id=f"trigger_{trigger_id}",
+            replace_existing=True,
+            misfire_grace_time=_MISFIRE_GRACE_SECONDS,
+        )
+
+    def cancel_trigger(self, trigger_id: int) -> None:
+        """Drop the scheduled job for a trigger, if one is registered."""
+        job = self._scheduler.get_job(f"trigger_{trigger_id}")
+        if job is not None:
+            job.remove()
 
     def start(self) -> None:
         """Start the scheduler on the currently running asyncio loop."""

@@ -126,6 +126,31 @@ morning_brief: |
   No motivational language. No "you got this." Just the brief.
   Max 150 words.
 
+evening_checkin: |
+  Generate the user's end-of-day check-in. Today is {today}.
+
+  Today's stated priority was: {top_priority}
+
+  Today's completions: {today_summary}
+
+  Active tasks:
+  {active_tasks}
+
+  Open blockers:
+  {blockers}
+
+  Structure the check-in in this exact order:
+
+  1. **Did the priority move?** One sentence, brutally honest. Moved, partially
+     moved, or didn't move — based only on the data above, never invented.
+  2. **What carries to tomorrow.** The single concrete next action, specified
+     the way the morning brief would — file, action, first sentence.
+  3. **One flag if warranted** — a blocker aging out, or signs of drift to
+     other work while the priority sat. Skip this section if there's nothing.
+
+  No motivational language. No "tomorrow's a new day." Just the check-in.
+  Max 100 words.
+
 stall_detection: |
   Look at the project below. Is the user stalling?
 

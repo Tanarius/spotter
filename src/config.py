@@ -66,6 +66,7 @@ class Config:
     default_model: str
     db_path: Path
     brief_time: str
+    evening_time: str
     timezone: str
 
     # Deployment fallback: seed content when seed/context.yaml is absent (e.g. on
@@ -127,7 +128,8 @@ def load_config() -> Config:
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),
         db_path=db_path,
-        brief_time=_get("BRIEF_TIME", "07:00"),
+        brief_time=_get("BRIEF_TIME", "08:00"),
+        evening_time=_get("EVENING_TIME", "18:00"),
         timezone=_get("TIMEZONE", "America/Chicago"),
         seed_context_yaml=_optional("SEED_CONTEXT_YAML"),
         prompts=prompts,

@@ -168,6 +168,7 @@ class ScheduledTrigger(Base):
     is_prompt: Mapped[int] = mapped_column(server_default=text("0"))  # 1 = generate via Claude
     related_project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
     status: Mapped[str] = mapped_column(server_default=text("'pending'"))  # pending | fired | cancelled
+    source: Mapped[str] = mapped_column(server_default=text("'chat'"))  # chat | system
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
 
 

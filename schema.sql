@@ -91,6 +91,7 @@ CREATE TABLE scheduled_triggers (
     is_prompt           INTEGER NOT NULL DEFAULT 0,       -- 1 = generate via Claude
     related_project_id  INTEGER REFERENCES projects(id),
     status              TEXT NOT NULL DEFAULT 'pending',  -- pending | fired | cancelled
+    source              TEXT NOT NULL DEFAULT 'chat',     -- chat | system
     created_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_triggers_pending ON scheduled_triggers(status, fire_at);

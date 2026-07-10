@@ -38,8 +38,8 @@ _LIVE_TASK_STATUSES = ("open", "in_progress")
 # Brief-specific system prompt: Spotter's voice without the chat persona's
 # 1-3 sentence length rule (which would fight the brief's structured format).
 _BRIEF_SYSTEM_TEMPLATE = (
-    "You are Spotter, a blunt, specific personal assistant. Write the user's morning "
-    "brief exactly as the user message instructs: honor the requested structure, order, "
+    "You are Spotter, a blunt, specific personal assistant. Write the user's {label} "
+    "exactly as the user message instructs: honor the requested structure, order, "
     "and word limit, and use no motivational language. Be honest — never invent progress, "
     "tasks, or items that aren't in the data provided.\n\n"
     "## Context about the user\n{facts}"
@@ -57,6 +57,7 @@ class BriefInputs:
     blockers: str
     captured_items: str
     yesterday_summary: str
+    today_summary: str
     top_priority: str | None
 
 
@@ -123,6 +124,25 @@ class BriefService:
                 row.top_priority = brief.top_priority
                 row.delivered_at = _utc_now_str()
 
+    def is_due_catch_up(self) -> bool:
+        """True when today's BRIEF_TIME has passed but no brief row exists yet.
+
+        Used at startup: the cron job only fires while the bot is running, so a
+        redeploy spanning BRIEF_TIME would otherwise silently skip the brief.
+        daily_briefs.brief_date is unique, making this check double-send-proof.
+        """
+        tz = ZoneInfo(self._config.timezone)
+        now_local = datetime.now(tz)
+        hour, minute = (int(part) for part in self._config.brief_time.split(":"))
+        if (now_local.hour, now_local.minute) < (hour, minute):
+            return False
+        today = now_local.strftime("%Y-%m-%d")
+        with self._session_factory() as session:
+            exists = session.scalar(
+                select(DailyBrief.id).where(DailyBrief.brief_date == today)
+            )
+        return exists is None
+
     def _call_claude(self, system: str, user_prompt: str) -> str:
         response = self._client.messages.create(
             model=self._config.default_model,
@@ -162,6 +182,7 @@ def assemble_inputs(session: Session, config: Config) -> BriefInputs:
         blockers=_format_open_blockers(session),
         captured_items=_format_captured_since(session, cutoff),
         yesterday_summary=_yesterday_summary(session, yesterday),
+        today_summary=_completed_summary(session, brief_date, "today"),
         top_priority=_top_priority(session),
     )
 
@@ -217,14 +238,20 @@ def _format_captured_since(session: Session, cutoff: str) -> str:
 
 def _yesterday_summary(session: Session, yesterday: str) -> str:
     """One honest line about yesterday. No completions -> say it was quiet."""
+    return _completed_summary(session, yesterday, "yesterday")
+
+
+def _completed_summary(session: Session, local_date: str, label: str) -> str:
+    """One honest line about completions on a local date (UTC-close enough:
+    completed_at is UTC; the day label is what the prompt needs, not a ledger)."""
     done = session.scalar(
         select(func.count())
         .select_from(Task)
-        .where(Task.completed_at.is_not(None), func.date(Task.completed_at) == yesterday)
+        .where(Task.completed_at.is_not(None), func.date(Task.completed_at) == local_date)
     ) or 0
     if done == 0:
-        return "Quiet — nothing was marked complete yesterday."
-    return f"Completed {done} task(s) yesterday."
+        return f"Quiet — nothing was marked complete {label}."
+    return f"Completed {done} task(s) {label}."
 
 
 def _top_priority(session: Session) -> str | None:
@@ -242,15 +269,17 @@ def _top_priority(session: Session) -> str | None:
     return task.title if task is not None else project.name
 
 
-def build_brief_system(config: Config, session: Session) -> str:
-    """Brief system prompt hydrated with the core (is_core=1) workspace facts."""
+def build_brief_system(
+    config: Config, session: Session, label: str = "morning brief"
+) -> str:
+    """Brief-family system prompt hydrated with the core workspace facts."""
     facts = session.scalars(
         select(WorkspaceFact)
         .where(WorkspaceFact.is_core == 1)
         .order_by(WorkspaceFact.category, WorkspaceFact.id)
     ).all()
     facts_text = "\n".join(f"- ({f.category}) {f.content}" for f in facts) or "(none)"
-    hydrated = _BRIEF_SYSTEM_TEMPLATE.replace("{facts}", facts_text)
+    hydrated = _BRIEF_SYSTEM_TEMPLATE.replace("{label}", label).replace("{facts}", facts_text)
     # Same per-call time block as the chat brain: the brief is the most
     # time-sensitive thing Spotter writes. {today} in the user prompt stays.
     return f"{hydrated}\n\n{time_context(config.timezone)}"
@@ -266,6 +295,18 @@ def render_morning_prompt(config: Config, inputs: BriefInputs) -> str:
         .replace("{blockers}", inputs.blockers)
         .replace("{captured_items}", inputs.captured_items)
         .replace("{yesterday_summary}", inputs.yesterday_summary)
+    )
+
+
+def render_evening_prompt(config: Config, inputs: BriefInputs) -> str:
+    """Fill the evening_checkin template. str.replace keeps literal braces safe."""
+    template = config.prompts.get("evening_checkin", "")
+    return (
+        template.replace("{today}", inputs.today)
+        .replace("{top_priority}", inputs.top_priority or "(no stated priority)")
+        .replace("{today_summary}", inputs.today_summary)
+        .replace("{active_tasks}", inputs.active_tasks)
+        .replace("{blockers}", inputs.blockers)
     )
 
 

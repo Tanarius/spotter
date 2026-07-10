@@ -15,7 +15,7 @@ from .brief import BriefService
 from .config import load_config
 from .db import initialize_database, make_session_factory
 from .scheduler import SpotterScheduler
-from .triggers import TriggerService
+from .triggers import TriggerService, ensure_evening_checkin
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ def main() -> None:
     engine, project_count = initialize_database(config.db_path, config.seed_context_yaml)
     session_factory = make_session_factory(engine)
     logger.info("Database ready with %d seeded projects", project_count)
+    ensure_evening_checkin(config, session_factory)
 
     client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     brief_service = BriefService(config, client, session_factory)
@@ -72,6 +73,12 @@ def main() -> None:
             registered,
             caught_up,
         )
+        # Morning-brief catch-up: if the bot was down at BRIEF_TIME and no
+        # brief exists for today (daily_briefs is unique on brief_date, so
+        # this can never double-send), deliver it now.
+        if brief_service.is_due_catch_up():
+            logger.info("Morning brief missed while down; catch-up delivering now")
+            asyncio.get_running_loop().create_task(_brief_job())
         logger.info(
             "Scheduler started; morning brief at %s %s",
             config.brief_time,

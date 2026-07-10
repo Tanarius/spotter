@@ -27,6 +27,7 @@ import telegram
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from .brief import assemble_inputs, build_brief_system, render_evening_prompt
 from .clock import time_context
 from .config import Config
 from .db.models import Project, ScheduledTrigger
@@ -39,6 +40,11 @@ logger = logging.getLogger(__name__)
 _UTC_FMT = "%Y-%m-%d %H:%M:%S"
 _GENERATED_MAX_TOKENS = 300
 _RECURRENCE_STEPS = {"daily": timedelta(days=1), "weekly": timedelta(days=7)}
+_EVENING_MAX_TOKENS = 512
+
+# The system evening check-in row's stored text is a descriptor only; the real
+# prompt is assembled fresh at fire time from workspace state (brief.py).
+_EVENING_CHECKIN_DESCRIPTOR = "System evening check-in (assembled from workspace state at fire time)"
 
 # System prompt for Claude-generated trigger messages. Same voice rules as the
 # rest of Spotter; the per-call time block is appended at generation time.
@@ -78,6 +84,73 @@ def next_occurrence(
         candidate = local_naive.replace(tzinfo=tz).astimezone(timezone.utc)
         if candidate > now_utc:
             return candidate
+
+
+def next_local_occurrence(hhmm: str, tz: ZoneInfo, now_utc: datetime) -> datetime:
+    """Next UTC instant at wall-clock ``HH:MM`` in ``tz`` strictly after now."""
+    hour, minute = (int(part) for part in hhmm.split(":"))
+    local_now = now_utc.astimezone(tz)
+    candidate_naive = local_now.replace(tzinfo=None).replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    )
+    candidate = candidate_naive.replace(tzinfo=tz).astimezone(timezone.utc)
+    if candidate <= now_utc:
+        candidate = next_occurrence(candidate, "daily", tz, now_utc)
+    return candidate
+
+
+def ensure_evening_checkin(
+    config: Config, session_factory: sessionmaker[Session]
+) -> None:
+    """Idempotently ensure the system evening check-in row matches EVENING_TIME.
+
+    Creates the daily recurring row on first boot; on later boots, if
+    EVENING_TIME changed, moves the pending row's fire_at to the next
+    occurrence at the new wall-clock time. A cancelled row is respected
+    (the user opted out) and left alone.
+    """
+    tz = ZoneInfo(config.timezone)
+    now_utc = datetime.now(timezone.utc)
+    with session_factory() as session, session.begin():
+        row = session.scalar(
+            select(ScheduledTrigger).where(
+                ScheduledTrigger.source == "system",
+                ScheduledTrigger.kind == "checkin",
+            )
+        )
+        if row is None:
+            due = next_local_occurrence(config.evening_time, tz, now_utc)
+            session.add(
+                ScheduledTrigger(
+                    kind="checkin",
+                    fire_at=format_db_utc(due),
+                    recurrence="daily",
+                    message_or_prompt=_EVENING_CHECKIN_DESCRIPTOR,
+                    is_prompt=1,
+                    source="system",
+                )
+            )
+            logger.info(
+                "Evening check-in created: daily at %s %s (first %s UTC)",
+                config.evening_time,
+                config.timezone,
+                format_db_utc(due),
+            )
+            return
+        if row.status == "cancelled":
+            logger.info("Evening check-in is cancelled; leaving it alone")
+            return
+        current_local = parse_db_utc(row.fire_at).astimezone(tz).strftime("%H:%M")
+        if current_local != config.evening_time:
+            due = next_local_occurrence(config.evening_time, tz, now_utc)
+            row.fire_at = format_db_utc(due)
+            logger.info(
+                "Evening check-in moved %s -> %s %s (next %s UTC)",
+                current_local,
+                config.evening_time,
+                config.timezone,
+                format_db_utc(due),
+            )
 
 
 class TriggerService:
@@ -180,15 +253,35 @@ class TriggerService:
             text = row.message_or_prompt
             is_prompt = bool(row.is_prompt)
             recurrence = row.recurrence
+            is_system_checkin = row.source == "system" and row.kind == "checkin"
             project = (
                 session.get(Project, row.related_project_id)
                 if row.related_project_id
                 else None
             )
             project_name = project.name if project else None
-        if is_prompt:
+        if is_system_checkin:
+            text = self._generate_evening()
+        elif is_prompt:
             text = self._generate(text, project_name)
         return text, recurrence
+
+    def _generate_evening(self) -> str:
+        """Assemble workspace state (brief.py pattern) and write the check-in."""
+        with self._session_factory() as session:
+            inputs = assemble_inputs(session, self._config)
+            system = build_brief_system(
+                self._config, session, label="end-of-day check-in"
+            )
+        user_prompt = render_evening_prompt(self._config, inputs)
+        response = self._client.messages.create(
+            model=self._config.default_model,
+            max_tokens=_EVENING_MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        parts = [block.text for block in response.content if block.type == "text"]
+        return "\n".join(parts).strip()
 
     def _finalize(self, trigger_id: int, recurrence: str | None) -> datetime | None:
         """Mark a one-shot fired, or advance a recurring fire_at. Returns next due."""

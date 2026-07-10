@@ -106,6 +106,11 @@ def apply_migrations(engine: Engine) -> None:
                 "ALTER TABLE scheduled_triggers ADD COLUMN is_prompt INTEGER NOT NULL DEFAULT 0"
             )
             logger.info("Migration: added scheduled_triggers.is_prompt")
+        if trigger_columns and "source" not in trigger_columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE scheduled_triggers ADD COLUMN source TEXT NOT NULL DEFAULT 'chat'"
+            )
+            logger.info("Migration: added scheduled_triggers.source")
 
 
 def load_seed(path: Path | None = None, env_yaml: str | None = None) -> dict:

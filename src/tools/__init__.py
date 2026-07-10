@@ -19,9 +19,10 @@ from .intent import schedule_intent
 from .memory import query_memory
 from .next_action import surface_next_action
 from .stall import name_the_stall
+from .reminder import schedule_reminder
 from .status import update_task_status
 
-# name -> handler. Eight tools registered; update_workspace_doc deferred.
+# name -> handler. Nine tools registered; update_workspace_doc deferred.
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "capture_item": capture_item,
     "query_memory": query_memory,
@@ -31,6 +32,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "schedule_intent": schedule_intent,
     "draft_message": draft_message,
     "update_task_status": update_task_status,
+    "schedule_reminder": schedule_reminder,
 }
 
 __all__ = ["TOOL_HANDLERS", "ToolContext", "ToolHandler"]

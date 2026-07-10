@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Any
 
 import anthropic
@@ -56,10 +57,12 @@ class Brain:
         config: Config,
         client: anthropic.Anthropic,
         session_factory: sessionmaker[Session],
+        trigger_registrar: Callable[[int, datetime], None] | None = None,
     ) -> None:
         self._config = config
         self._client = client
         self._session_factory = session_factory
+        self._trigger_registrar = trigger_registrar
 
     def respond(self, user_text: str) -> str:
         """Produce Spotter's reply to ``user_text``, running tools as needed."""
@@ -140,10 +143,23 @@ class Brain:
             return f"Tool '{name}' is not available yet.", True
         try:
             with self._session_factory() as session, session.begin():
-                return handler(ToolContext(session=session, config=self._config), tool_input), False
+                context = ToolContext(
+                    session=session,
+                    config=self._config,
+                    register_trigger=self._trigger_registrar,
+                )
+                result = handler(context, tool_input)
         except Exception:
             logger.exception("Tool handler %s failed", name)
             return f"Error running {name}.", True
+        # Post-commit hooks (e.g. arming a new trigger with the live scheduler)
+        # run only once the row is durable; their failures don't fail the tool.
+        for callback in context.post_commit:
+            try:
+                callback()
+            except Exception:
+                logger.exception("post_commit hook for %s failed", name)
+        return result, False
 
     # -- prompt + history ----------------------------------------------------
 

@@ -168,5 +168,37 @@
       },
       "required": ["target_type", "status"]
     }
+  },
+  {
+    "name": "schedule_reminder",
+    "description": "Create a scheduled message the user will receive later: a one-shot reminder or a recurring check-in. Resolve natural-language times ('at 3pm', 'tomorrow morning', 'every evening at 6') into a concrete LOCAL date and time using the Current time block in your context, and pass it as when_local. For recurring requests ('every evening at 6') set recurrence and pass the next upcoming occurrence as when_local. kind=reminder sends the message verbatim; kind=checkin has Spotter write the message at fire time from your instruction. Do not use this for the user's vague future intents with no set time — that's schedule_intent.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "when_local": {
+          "type": "string",
+          "description": "Resolved local date and time, 'YYYY-MM-DD HH:MM' (24-hour), in the user's timezone shown in the Current time block."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["reminder", "checkin"],
+          "description": "reminder = send the message text verbatim. checkin = generate a message at fire time from the instruction in message."
+        },
+        "message": {
+          "type": "string",
+          "description": "For reminder: the exact text to send. For checkin: the instruction for what the check-in should cover."
+        },
+        "recurrence": {
+          "type": "string",
+          "enum": ["daily", "weekly"],
+          "description": "Set for recurring triggers; omit for one-shot."
+        },
+        "project": {
+          "type": "string",
+          "description": "Optional related project name."
+        }
+      },
+      "required": ["when_local", "kind", "message"]
+    }
   }
 ]

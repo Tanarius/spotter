@@ -9,7 +9,8 @@ so write it for the model, concise and unambiguous.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -21,10 +22,20 @@ from ..db.models import Project
 
 @dataclass(frozen=True)
 class ToolContext:
-    """Everything a tool handler needs to do its work."""
+    """Everything a tool handler needs to do its work.
+
+    ``register_trigger`` (when the bot is live) arms a scheduled_triggers row
+    with the running scheduler: ``(trigger_id, due_utc) -> None``. Handlers must
+    not call it directly — append a closure to ``post_commit`` instead, which
+    the brain runs only after the transaction commits, so a job can never fire
+    before its row exists. Both are optional: without them, created triggers
+    still persist and arm on the next boot via register_pending.
+    """
 
     session: Session
     config: Config
+    register_trigger: Callable[[int, datetime], None] | None = None
+    post_commit: list[Callable[[], None]] = field(default_factory=list)
 
 
 # A tool handler: (context, parsed tool input) -> result text for Claude.

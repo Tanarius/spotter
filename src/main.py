@@ -16,6 +16,7 @@ from .config import load_config
 from .db import initialize_database, make_session_factory
 from .scheduler import SpotterScheduler
 from .triggers import TriggerService, ensure_evening_checkin
+from .web import Dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,14 @@ def main() -> None:
 
     brain = Brain(config, client, session_factory, _register_trigger_threadsafe)
 
+    # The dashboard only exists when DASHBOARD_PASSWORD is set: no password, no
+    # web server — the port is never bound, rather than serving unauthenticated.
+    dashboard: Dashboard | None = None
+    if config.dashboard_password:
+        dashboard = Dashboard(config, session_factory)
+    else:
+        logger.warning("DASHBOARD_PASSWORD unset; web dashboard disabled")
+
     async def _post_init(application: Application) -> None:
         # The bot exists now, so bind the brief job to it and start the scheduler
         # on the running loop (alongside polling, not blocking it).
@@ -84,8 +93,12 @@ def main() -> None:
             config.brief_time,
             config.timezone,
         )
+        if dashboard is not None:
+            await dashboard.start()
 
     async def _post_shutdown(application: Application) -> None:
+        if dashboard is not None:
+            await dashboard.stop()
         scheduler.shutdown()
 
     print("Spotter alive")

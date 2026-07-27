@@ -69,6 +69,12 @@ class Config:
     evening_time: str
     timezone: str
 
+    # Web dashboard. The dashboard only serves when dashboard_password is set —
+    # an empty value means the web server is never started (refuse rather than
+    # run open). web_port comes from PORT, which Railway injects for HTTP routing.
+    dashboard_password: str
+    web_port: int
+
     # Deployment fallback: seed content when seed/context.yaml is absent (e.g. on
     # Railway, where the file is gitignored). Empty string when the file is used.
     seed_context_yaml: str
@@ -128,6 +134,8 @@ def load_config() -> Config:
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),
         db_path=db_path,
+        dashboard_password=_optional("DASHBOARD_PASSWORD"),
+        web_port=int(_get("PORT", "8080")),
         brief_time=_get("BRIEF_TIME", "08:00"),
         evening_time=_get("EVENING_TIME", "18:00"),
         timezone=_get("TIMEZONE", "America/Chicago"),

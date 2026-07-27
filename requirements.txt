@@ -4,5 +4,6 @@ sqlalchemy>=2.0
 pyyaml
 python-dotenv
 apscheduler>=3.10
+aiohttp>=3.10
 requests
 groq

@@ -1,12 +1,18 @@
 """Password-gated web dashboard served from the Spotter process.
 
-Web Step 1 scope: read-only state view. An aiohttp application runs on the SAME
-asyncio event loop as python-telegram-bot and APScheduler — ``Dashboard.start``
-is awaited from the bot's ``post_init`` hook, so no second process, thread, or
-event loop exists. All database reads go through ``asyncio.to_thread`` with a
-short-lived session from the shared ``session_factory``, the exact pattern the
-Telegram handler already uses for ``Brain.respond``, so DB access stays
-thread-safe by construction.
+Web Steps 1-2: read-only state view plus button actions (complete a task,
+change a task's status, resolve a stall). An aiohttp application runs on the
+SAME asyncio event loop as python-telegram-bot and APScheduler —
+``Dashboard.start`` is awaited from the bot's ``post_init`` hook, so no second
+process, thread, or event loop exists. All database access goes through
+``asyncio.to_thread`` with a short-lived session from the shared
+``session_factory``, the exact pattern the Telegram handler already uses for
+``Brain.respond``, so DB access stays thread-safe by construction.
+
+Task writes are NOT reimplemented here: they call the same
+``update_task_status`` tool handler the brain dispatches, inside the same
+transaction shape (``session.begin()`` + ``ToolContext``), so the web and chat
+can never disagree about what a status change means.
 
 Access control: a single shared secret from DASHBOARD_PASSWORD. ``main`` never
 constructs a Dashboard when the password is unset, so there is no open-server
@@ -22,6 +28,7 @@ import hmac
 import html
 import logging
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from aiohttp import web
@@ -30,6 +37,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .config import Config
 from .db.models import Project, ScheduledTrigger, StallEvent, Task
+from .tools.base import ToolContext
+from .tools.status import update_task_status
 from .triggers import parse_db_utc
 
 logger = logging.getLogger(__name__)
@@ -44,6 +53,9 @@ _FAILED_LOGIN_DELAY_SECONDS = 1.0
 
 # Task statuses that still represent live work (mirrors tools/status.py).
 _LIVE_TASK_STATUSES = ("open", "in_progress", "paused", "waiting")
+# Statuses offered in the per-task dropdown. Validation happens inside the
+# update_task_status tool, not here — this only shapes the UI.
+_STATUS_CHOICES = ("open", "waiting", "paused", "done")
 
 
 class Dashboard:
@@ -66,6 +78,10 @@ class Dashboard:
         app.router.add_get("/login", self._login_page)
         app.router.add_post("/login", self._login_submit)
         app.router.add_post("/logout", self._logout)
+        # Write path (Step 2). Same auth middleware guards these: an
+        # unauthenticated POST is redirected to /login before any handler runs.
+        app.router.add_post("/tasks/status", self._task_status_action)
+        app.router.add_post("/stalls/resolve", self._stall_resolve_action)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._config.web_port)
@@ -127,7 +143,47 @@ class Dashboard:
     async def _index(self, request: web.Request) -> web.Response:
         # DB reads run off-loop, same as every other DB touch in the process.
         state = await asyncio.to_thread(self._load_state)
-        return _html_response(_render_index(state, self._config.timezone))
+        message = request.query.get("msg", "")
+        return _html_response(_render_index(state, self._config.timezone, message))
+
+    # -- actions (write path) ----------------------------------------------------
+
+    async def _task_status_action(self, request: web.Request) -> web.Response:
+        """Set a task's status via the update_task_status tool handler."""
+        form = await request.post()
+        task_id = _parse_id(form.get("id"))
+        status = str(form.get("status", "")).strip()
+        if task_id is None:
+            raise web.HTTPBadRequest(text="missing or non-numeric task id")
+        result = await asyncio.to_thread(self._write_task_status, task_id, status)
+        raise _redirect_with_message(result)
+
+    def _write_task_status(self, task_id: int, status: str) -> str:
+        """Run the update_task_status tool exactly as the brain dispatches it."""
+        with self._session_factory() as session, session.begin():
+            context = ToolContext(session=session, config=self._config)
+            return update_task_status(
+                context, {"target_type": "task", "id": task_id, "status": status}
+            )
+
+    async def _stall_resolve_action(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        stall_id = _parse_id(form.get("id"))
+        if stall_id is None:
+            raise web.HTTPBadRequest(text="missing or non-numeric stall id")
+        result = await asyncio.to_thread(self._write_stall_resolved, stall_id)
+        raise _redirect_with_message(result)
+
+    def _write_stall_resolved(self, stall_id: int) -> str:
+        """Mark a stall resolved. No tool exists for this; the write is one flag."""
+        with self._session_factory() as session, session.begin():
+            stall = session.get(StallEvent, stall_id)
+            if stall is None:
+                return f"No stall #{stall_id} found."
+            if stall.resolved:
+                return f"Stall #{stall_id} was already resolved."
+            stall.resolved = 1
+            return f"Stall #{stall_id} ({stall.description}) marked resolved."
 
     def _load_state(self) -> dict[str, Any]:
         """Snapshot everything the page shows into plain dicts (no live ORM rows)."""
@@ -204,6 +260,18 @@ def _is_https(request: web.Request) -> bool:
     return request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
 
 
+def _parse_id(raw: Any) -> int | None:
+    try:
+        return int(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _redirect_with_message(message: str) -> web.HTTPSeeOther:
+    """Post/Redirect/Get back to the dashboard, carrying the result as a toast."""
+    return web.HTTPSeeOther(f"/?msg={quote(message)}")
+
+
 # -- rendering (server-side HTML; every DB string goes through html.escape) ------
 
 _STYLE = """
@@ -242,6 +310,17 @@ button, input[type=submit] {
   background: #2a2e36; color: #d7dae0; border: 1px solid #3a3f49;
   border-radius: 6px; padding: 6px 14px; font-size: 14px; cursor: pointer;
 }
+button.primary { background: #173225; color: #6fce93; border-color: #2c5b40; }
+.actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.actions form { display: flex; gap: 6px; margin: 0; }
+select {
+  background: #2a2e36; color: #d7dae0; border: 1px solid #3a3f49;
+  border-radius: 6px; padding: 5px 8px; font-size: 14px;
+}
+.toast {
+  background: #162c3d; color: #62b0e8; border: 1px solid #1f4159;
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px;
+}
 input[type=password] {
   background: #1c1f25; color: #d7dae0; border: 1px solid #3a3f49;
   border-radius: 6px; padding: 8px 10px; font-size: 15px; width: 100%;
@@ -278,10 +357,12 @@ def _render_login(error: bool) -> str:
     )
 
 
-def _render_index(state: dict[str, Any], timezone_name: str) -> str:
+def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") -> str:
+    toast = f"<p class='toast'>{html.escape(message)}</p>" if message else ""
     sections = [
         "<div class='topbar'><h1>Spotter</h1>"
         "<form method='post' action='/logout'><button>Log out</button></form></div>",
+        toast,
         "<h2>Projects</h2>",
         _render_projects(state["projects"]),
         "<h2>Open tasks</h2>",
@@ -325,9 +406,37 @@ def _render_tasks(tasks: list[dict[str, Any]]) -> str:
             "<div class='card'><div class='row'>"
             f"<span class='title'>#{t['id']} {html.escape(t['title'])}</span>"
             f"<span class='badge {html.escape(t['status'])}'>{html.escape(t['status'])}</span>"
-            f"{next_badge}{project}</div></div>"
+            f"{next_badge}{project}</div>"
+            f"{_render_task_actions(t)}</div>"
         )
     return "".join(cards)
+
+
+def _render_task_actions(task: dict[str, Any]) -> str:
+    """A one-click Done button plus a status dropdown, each its own POST form."""
+    task_id = task["id"]
+    # The dropdown always shows the task's current status, even one (like
+    # in_progress) that isn't offered as a choice here.
+    statuses = list(_STATUS_CHOICES)
+    if task["status"] not in statuses:
+        statuses.insert(0, task["status"])
+    options = "".join(
+        f"<option value='{html.escape(s)}'{' selected' if s == task['status'] else ''}>"
+        f"{html.escape(s)}</option>"
+        for s in statuses
+    )
+    return (
+        "<div class='actions'>"
+        f"<form method='post' action='/tasks/status'>"
+        f"<input type='hidden' name='id' value='{task_id}'>"
+        "<input type='hidden' name='status' value='done'>"
+        "<button class='primary'>&#10003; Done</button></form>"
+        f"<form method='post' action='/tasks/status'>"
+        f"<input type='hidden' name='id' value='{task_id}'>"
+        f"<select name='status'>{options}</select> "
+        "<button>Set</button></form>"
+        "</div>"
+    )
 
 
 def _render_stalls(stalls: list[dict[str, Any]]) -> str:
@@ -339,7 +448,10 @@ def _render_stalls(stalls: list[dict[str, Any]]) -> str:
             "<div class='card'><div class='row'>"
             f"<span class='title'>{html.escape(s['project'])}</span>"
             f"<span class='muted'>#{s['id']} · {html.escape(s['created_at'])}</span></div>"
-            f"<div>Avoiding: {html.escape(s['description'])}</div></div>"
+            f"<div>Avoiding: {html.escape(s['description'])}</div>"
+            "<div class='actions'><form method='post' action='/stalls/resolve'>"
+            f"<input type='hidden' name='id' value='{s['id']}'>"
+            "<button>Mark resolved</button></form></div></div>"
         )
     return "".join(cards)
 

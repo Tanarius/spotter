@@ -1,7 +1,8 @@
 """Password-gated web dashboard served from the Spotter process.
 
-Web Steps 1-2: read-only state view plus button actions (complete a task,
-change a task's status, resolve a stall). An aiohttp application runs on the
+Web Steps 1-3: read-only state view, button actions (complete a task, change a
+task's status, resolve a stall), quick-add forms (task, captured item), and the
+job-applications tracker. An aiohttp application runs on the
 SAME asyncio event loop as python-telegram-bot and APScheduler —
 ``Dashboard.start`` is awaited from the bot's ``post_init`` hook, so no second
 process, thread, or event loop exists. All database access goes through
@@ -27,6 +28,7 @@ import hashlib
 import hmac
 import html
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -36,8 +38,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import Config
-from .db.models import Project, ScheduledTrigger, StallEvent, Task
+from .db.models import (
+    CapturedItem,
+    JobApplication,
+    Project,
+    ScheduledTrigger,
+    StallEvent,
+    Task,
+)
 from .tools.base import ToolContext
+from .tools.capture import capture_item
 from .tools.status import update_task_status
 from .triggers import parse_db_utc
 
@@ -56,6 +66,18 @@ _LIVE_TASK_STATUSES = ("open", "in_progress", "paused", "waiting")
 # Statuses offered in the per-task dropdown. Validation happens inside the
 # update_task_status tool, not here — this only shapes the UI.
 _STATUS_CHOICES = ("open", "waiting", "paused", "done")
+# Job-application pipeline statuses, in rough funnel order.
+_APP_STATUSES = (
+    "applied",
+    "responded",
+    "screen",
+    "interview",
+    "offer",
+    "rejected",
+    "ghosted",
+)
+# How many recent captured items the dashboard lists.
+_RECENT_CAPTURES = 8
 
 
 class Dashboard:
@@ -82,6 +104,11 @@ class Dashboard:
         # unauthenticated POST is redirected to /login before any handler runs.
         app.router.add_post("/tasks/status", self._task_status_action)
         app.router.add_post("/stalls/resolve", self._stall_resolve_action)
+        # Quick-add + job applications (Step 3), same auth middleware.
+        app.router.add_post("/tasks/add", self._task_add_action)
+        app.router.add_post("/captures/add", self._capture_add_action)
+        app.router.add_post("/apps/add", self._app_add_action)
+        app.router.add_post("/apps/status", self._app_status_action)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._config.web_port)
@@ -185,6 +212,88 @@ class Dashboard:
             stall.resolved = 1
             return f"Stall #{stall_id} ({stall.description}) marked resolved."
 
+    async def _task_add_action(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        title = str(form.get("title", "")).strip()
+        project_id = _parse_id(form.get("project_id"))  # None = unlinked
+        result = await asyncio.to_thread(self._write_task_add, title, project_id)
+        raise _redirect_with_message(result)
+
+    def _write_task_add(self, title: str, project_id: int | None) -> str:
+        """Create a task. No create-task tool exists; this is the one write path."""
+        if not title:
+            return "Task needs a title."
+        with self._session_factory() as session, session.begin():
+            project = session.get(Project, project_id) if project_id else None
+            if project_id is not None and project is None:
+                return f"No project #{project_id} found."
+            task = Task(title=title, project_id=project.id if project else None)
+            session.add(task)
+            session.flush()
+            where = f" under {project.name}" if project else ""
+            return f"Task #{task.id} added{where}: {title}"
+
+    async def _capture_add_action(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        content = str(form.get("content", "")).strip()
+        result = await asyncio.to_thread(self._write_capture, content)
+        raise _redirect_with_message(result)
+
+    def _write_capture(self, content: str) -> str:
+        """Run the capture_item tool exactly as the brain dispatches it."""
+        with self._session_factory() as session, session.begin():
+            context = ToolContext(session=session, config=self._config)
+            return capture_item(context, {"content": content, "source": "dashboard"})
+
+    async def _app_add_action(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        fields = {
+            key: str(form.get(key, "")).strip()
+            for key in ("company", "role", "source", "date_applied", "notes")
+        }
+        result = await asyncio.to_thread(self._write_app_add, fields)
+        raise _redirect_with_message(result)
+
+    def _write_app_add(self, fields: dict[str, str]) -> str:
+        if not fields["company"] or not fields["role"]:
+            return "An application needs at least a company and a role."
+        date_applied = fields["date_applied"] or datetime.now(self._tz).strftime("%Y-%m-%d")
+        with self._session_factory() as session, session.begin():
+            app_row = JobApplication(
+                company=fields["company"],
+                role=fields["role"],
+                source=fields["source"] or None,
+                date_applied=date_applied,
+                notes=fields["notes"] or None,
+            )
+            session.add(app_row)
+            session.flush()
+            return (
+                f"Application #{app_row.id} added: {fields['role']} at "
+                f"{fields['company']} ({date_applied})."
+            )
+
+    async def _app_status_action(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        app_id = _parse_id(form.get("id"))
+        status = str(form.get("status", "")).strip().lower()
+        if app_id is None:
+            raise web.HTTPBadRequest(text="missing or non-numeric application id")
+        result = await asyncio.to_thread(self._write_app_status, app_id, status)
+        raise _redirect_with_message(result)
+
+    def _write_app_status(self, app_id: int, status: str) -> str:
+        if status not in _APP_STATUSES:
+            return f"Invalid application status '{status}'. Valid: {', '.join(_APP_STATUSES)}."
+        with self._session_factory() as session, session.begin():
+            app_row = session.get(JobApplication, app_id)
+            if app_row is None:
+                return f"No application #{app_id} found."
+            old = app_row.status
+            app_row.status = status
+            app_row.updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            return f"{app_row.company} — {app_row.role}: {old} -> {status}."
+
     def _load_state(self) -> dict[str, Any]:
         """Snapshot everything the page shows into plain dicts (no live ORM rows)."""
         with self._session_factory() as session:
@@ -203,6 +312,16 @@ class Dashboard:
                 select(ScheduledTrigger)
                 .where(ScheduledTrigger.status == "pending")
                 .order_by(ScheduledTrigger.fire_at)
+            ).all()
+            apps = session.scalars(
+                select(JobApplication).order_by(
+                    JobApplication.date_applied.desc(), JobApplication.id.desc()
+                )
+            ).all()
+            captures = session.scalars(
+                select(CapturedItem)
+                .order_by(CapturedItem.id.desc())
+                .limit(_RECENT_CAPTURES)
             ).all()
             project_names = {p.id: p.name for p in projects}
             return {
@@ -245,6 +364,29 @@ class Dashboard:
                     }
                     for tr in triggers
                 ],
+                "apps": [
+                    {
+                        "id": a.id,
+                        "company": a.company,
+                        "role": a.role,
+                        "source": a.source,
+                        "status": a.status,
+                        "date_applied": a.date_applied,
+                        "notes": a.notes,
+                    }
+                    for a in apps
+                ],
+                "captures": [
+                    {
+                        "id": c.id,
+                        "content": c.content,
+                        "category": c.category,
+                        "source": c.source,
+                        "created_at": c.created_at,
+                    }
+                    for c in captures
+                ],
+                "today_local": datetime.now(self._tz).strftime("%Y-%m-%d"),
             }
 
     def _format_local(self, fire_at_utc: str) -> str:
@@ -303,6 +445,10 @@ h2 {
 .badge.paused, .badge.waiting { background: #33290f; color: #d3b45e; }
 .badge.done { background: #2a2e36; color: #8a919c; }
 .badge.next { background: #3b2320; color: #e8896f; }
+.badge.applied, .badge.screen { background: #162c3d; color: #62b0e8; }
+.badge.responded, .badge.offer { background: #173225; color: #6fce93; }
+.badge.interview { background: #33290f; color: #d3b45e; }
+.badge.rejected, .badge.ghosted { background: #2a2e36; color: #8a919c; }
 .empty { color: #6b7280; font-style: italic; padding: 4px 2px; }
 .topbar { display: flex; justify-content: space-between; align-items: center; }
 .topbar form { margin: 0; }
@@ -321,10 +467,13 @@ select {
   background: #162c3d; color: #62b0e8; border: 1px solid #1f4159;
   border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px;
 }
-input[type=password] {
-  background: #1c1f25; color: #d7dae0; border: 1px solid #3a3f49;
+input[type=password], input[type=text], input[type=date] {
+  background: #14161a; color: #d7dae0; border: 1px solid #3a3f49;
   border-radius: 6px; padding: 8px 10px; font-size: 15px; width: 100%;
 }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 480px) { .grid2 { grid-template-columns: 1fr; } }
 .login-wrap { max-width: 320px; margin: 18vh auto 0; }
 .login-wrap h1 { text-align: center; }
 .error { color: #e8896f; font-size: 14px; margin-top: 8px; }
@@ -363,16 +512,94 @@ def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") 
         "<div class='topbar'><h1>Spotter</h1>"
         "<form method='post' action='/logout'><button>Log out</button></form></div>",
         toast,
+        "<h2>Quick add</h2>",
+        _render_quick_add(state["projects"]),
         "<h2>Projects</h2>",
         _render_projects(state["projects"]),
         "<h2>Open tasks</h2>",
         _render_tasks(state["tasks"]),
         "<h2>Active stalls</h2>",
         _render_stalls(state["stalls"]),
+        "<h2>Job applications</h2>",
+        _render_app_add(state["today_local"]),
+        _render_apps(state["apps"]),
+        "<h2>Recent captures</h2>",
+        _render_captures(state["captures"]),
         f"<h2>Upcoming triggers <span class='muted'>({html.escape(timezone_name)})</span></h2>",
         _render_triggers(state["triggers"]),
     ]
     return _page("Spotter", "".join(sections))
+
+
+def _render_quick_add(projects: list[dict[str, Any]]) -> str:
+    """Two small forms: a new task (title + optional project) and a capture."""
+    options = "<option value=''>(no project)</option>" + "".join(
+        f"<option value='{p['id']}'>{html.escape(p['name'])}</option>"
+        for p in projects
+        if p["status"] == "active"
+    )
+    return (
+        "<div class='card'><form method='post' action='/tasks/add' class='stack'>"
+        "<input type='text' name='title' placeholder='New task title'>"
+        f"<div class='actions'><select name='project_id'>{options}</select>"
+        "<button>Add task</button></div></form></div>"
+        "<div class='card'><form method='post' action='/captures/add' class='stack'>"
+        "<input type='text' name='content' placeholder='Capture a thought, link, follow-up…'>"
+        "<div class='actions'><button>Capture</button></div></form></div>"
+    )
+
+
+def _render_app_add(today_local: str) -> str:
+    return (
+        "<div class='card'><form method='post' action='/apps/add' class='stack'>"
+        "<div class='grid2'>"
+        "<input type='text' name='company' placeholder='Company'>"
+        "<input type='text' name='role' placeholder='Role'>"
+        "<input type='text' name='source' placeholder='Source (LinkedIn, referral…)'>"
+        f"<input type='date' name='date_applied' value='{html.escape(today_local)}'>"
+        "</div>"
+        "<input type='text' name='notes' placeholder='Notes (optional)'>"
+        "<div class='actions'><button>Add application</button></div></form></div>"
+    )
+
+
+def _render_apps(apps: list[dict[str, Any]]) -> str:
+    if not apps:
+        return "<p class='empty'>No applications tracked yet.</p>"
+    cards = []
+    for a in apps:
+        options = "".join(
+            f"<option value='{s}'{' selected' if s == a['status'] else ''}>{s}</option>"
+            for s in _APP_STATUSES
+        )
+        source = f" · {html.escape(a['source'])}" if a["source"] else ""
+        notes = f"<div class='muted'>{html.escape(a['notes'])}</div>" if a["notes"] else ""
+        cards.append(
+            "<div class='card'><div class='row'>"
+            f"<span class='title'>{html.escape(a['company'])} — {html.escape(a['role'])}</span>"
+            f"<span class='badge {html.escape(a['status'])}'>{html.escape(a['status'])}</span>"
+            f"<span class='muted'>{html.escape(a['date_applied'])}{source}</span></div>"
+            f"{notes}"
+            "<div class='actions'><form method='post' action='/apps/status'>"
+            f"<input type='hidden' name='id' value='{a['id']}'>"
+            f"<select name='status'>{options}</select> <button>Set</button></form></div></div>"
+        )
+    return "".join(cards)
+
+
+def _render_captures(captures: list[dict[str, Any]]) -> str:
+    if not captures:
+        return "<p class='empty'>Nothing captured yet.</p>"
+    cards = []
+    for c in captures:
+        category = f"<span class='badge'>{html.escape(c['category'])}</span>" if c["category"] else ""
+        cards.append(
+            "<div class='card'><div class='row'>"
+            f"<span>{html.escape(c['content'])}</span>{category}"
+            f"<span class='muted'>#{c['id']} · {html.escape(c['source'])} · "
+            f"{html.escape(c['created_at'])}</span></div></div>"
+        )
+    return "".join(cards)
 
 
 def _render_projects(projects: list[dict[str, Any]]) -> str:

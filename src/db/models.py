@@ -70,7 +70,7 @@ class CapturedItem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     content: Mapped[str]
-    source: Mapped[str] = mapped_column(server_default=text("'telegram'"))  # telegram | voice | brief
+    source: Mapped[str] = mapped_column(server_default=text("'telegram'"))  # telegram | voice | brief | dashboard
     category: Mapped[str | None]  # thought | followup | idea | link | task_candidate
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
     processed: Mapped[int] = mapped_column(server_default=text("0"))
@@ -220,6 +220,32 @@ class StallEvent(Base):
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
 
 
+class JobApplication(Base):
+    """Job-search pipeline entry, managed from the web dashboard.
+
+    Added after schema.sql was finalized, so unlike the original ten tables it
+    exists only here; ``create_all`` creates it on existing databases (the same
+    additive path scheduled_triggers used).
+    """
+
+    __tablename__ = "job_applications"
+    __table_args__ = (
+        Index("idx_job_apps_status", "status", "date_applied"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company: Mapped[str]
+    role: Mapped[str]
+    source: Mapped[str | None]  # where it was found/submitted (LinkedIn, referral, ...)
+    # applied | responded | screen | interview | offer | rejected | ghosted
+    status: Mapped[str] = mapped_column(server_default=text("'applied'"))
+    date_applied: Mapped[str]  # local date, 'YYYY-MM-DD'
+    notes: Mapped[str | None]
+    created_at: Mapped[str] = mapped_column(server_default=_NOW)
+    updated_at: Mapped[str] = mapped_column(server_default=_NOW)
+
+
 # ---------------------------------------------------------------------------
 # FTS5 virtual tables + sync triggers.
 #
@@ -291,5 +317,6 @@ __all__ = [
     "ScheduleIntent",
     "DailyBrief",
     "StallEvent",
+    "JobApplication",
     "FTS_STATEMENTS",
 ]

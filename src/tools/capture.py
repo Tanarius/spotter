@@ -23,10 +23,12 @@ def capture_item(ctx: ToolContext, tool_input: dict[str, Any]) -> str:
     project_name = tool_input.get("project_name")
     project_id = _resolve_project_id(ctx, project_name)
 
+    # 'source' is an internal caller field (the dashboard passes 'dashboard'),
+    # not part of the model-facing schema — Claude's calls never set it.
     item = CapturedItem(
         content=content,
         category=category,
-        source="telegram",
+        source=tool_input.get("source") or "telegram",
         project_id=project_id,
     )
     ctx.session.add(item)

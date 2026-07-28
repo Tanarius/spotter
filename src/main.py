@@ -58,7 +58,7 @@ def main() -> None:
     # web server — the port is never bound, rather than serving unauthenticated.
     dashboard: Dashboard | None = None
     if config.dashboard_password:
-        dashboard = Dashboard(config, session_factory)
+        dashboard = Dashboard(config, session_factory, brain)
     else:
         logger.warning("DASHBOARD_PASSWORD unset; web dashboard disabled")
 

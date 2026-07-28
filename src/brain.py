@@ -64,8 +64,13 @@ class Brain:
         self._session_factory = session_factory
         self._trigger_registrar = trigger_registrar
 
-    def respond(self, user_text: str) -> str:
-        """Produce Spotter's reply to ``user_text``, running tools as needed."""
+    def respond(self, user_text: str, *, log: bool = True) -> str:
+        """Produce Spotter's reply to ``user_text``, running tools as needed.
+
+        ``log=False`` skips the conversation_log write. Dashboard surfaces use
+        it for ephemeral executive-function queries (next-action generation,
+        shrinking) so page interactions don't crowd out real chat history.
+        """
         with self._session_factory() as session:
             system_prompt = self._build_system_prompt(session)
             history = self._load_history(session)
@@ -91,7 +96,10 @@ class Brain:
 
                 if response.stop_reason != "tool_use":
                     reply = _extract_text(response)
-                    self._log_turn(user_text, reply, tokens_in, tokens_out, tool_calls)
+                    if log:
+                        self._log_turn(
+                            user_text, reply, tokens_in, tokens_out, tool_calls
+                        )
                     return reply
 
                 # Claude wants tools: dispatch each, collect results, loop.
@@ -108,7 +116,8 @@ class Brain:
         logger.warning(
             "Tool loop hit the %d-iteration cap; aborting turn", _MAX_TOOL_ITERATIONS
         )
-        self._log_turn(user_text, _CAP_REPLY, tokens_in, tokens_out, tool_calls)
+        if log:
+            self._log_turn(user_text, _CAP_REPLY, tokens_in, tokens_out, tool_calls)
         return _CAP_REPLY
 
     # -- tool dispatch -------------------------------------------------------

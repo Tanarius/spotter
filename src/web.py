@@ -27,7 +27,9 @@ import asyncio
 import hashlib
 import hmac
 import html
+import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -37,6 +39,8 @@ from aiohttp import web
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from .brain import _FALLBACK_REPLY as _BRAIN_FALLBACK
+from .brain import Brain
 from .config import Config
 from .db.models import (
     CapturedItem,
@@ -46,8 +50,11 @@ from .db.models import (
     StallEvent,
     Task,
 )
-from .tools.base import ToolContext
+from .tools.base import ToolContext, resolve_project
 from .tools.capture import capture_item
+# _next_task is the tool's own candidate pick (is_next else oldest open); the
+# hero uses it directly so the page and the agent can never pick differently.
+from .tools.next_action import _next_task
 from .tools.status import update_task_status
 from .triggers import parse_db_utc
 
@@ -78,18 +85,50 @@ _APP_STATUSES = (
 )
 # How many recent captured items the dashboard lists.
 _RECENT_CAPTURES = 8
+# Generated next actions are cached per project this long (and invalidated
+# whenever the underlying task row changes), so page loads stay free.
+_NEXT_ACTION_TTL_SECONDS = 600
+# A task untouched this long gets a staleness marker in the work list.
+_STALE_AFTER_DAYS = 3
+
+_NEXT_ACTION_PROMPT = (
+    "Surface the next concrete action on {project} (use the surface_next_action "
+    "tool). Reply with only the next action itself — one or two short sentences, "
+    "no preamble, no commentary."
+)
+_SHRINK_PROMPT = (
+    "The current next step on {project} is still too big for me to start: "
+    '"{current}". Use surface_next_action with smaller_than set to that text and '
+    "give me the first physical move — which file to open, the first command to "
+    "run, the first sentence to write. Reply with only that smaller step."
+)
+_STALL_CHECK_PROMPT = (
+    "Am I stalling on {project}? Check the current state — if I am, name the "
+    "stall bluntly (log it with name_the_stall if it's new); if not, say so in "
+    "one or two sentences."
+)
 
 
 class Dashboard:
     """The web dashboard: owns the aiohttp app and its lifecycle."""
 
-    def __init__(self, config: Config, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        config: Config,
+        session_factory: sessionmaker[Session],
+        brain: Brain,
+    ) -> None:
         if not config.dashboard_password:
             raise ValueError("Dashboard requires DASHBOARD_PASSWORD to be set")
         self._config = config
         self._session_factory = session_factory
+        self._brain = brain
         self._tz = ZoneInfo(config.timezone)
         self._runner: web.AppRunner | None = None
+        # project_id -> generated next-action step, keyed to the exact task row
+        # (id + updated_at) it was generated from. Mutated only from to_thread
+        # workers; a lost race just costs one duplicate generation.
+        self._next_cache: dict[int, dict[str, Any]] = {}
 
     # -- lifecycle (called from post_init / post_shutdown, on the running loop) --
 
@@ -109,6 +148,11 @@ class Dashboard:
         app.router.add_post("/captures/add", self._capture_add_action)
         app.router.add_post("/apps/add", self._app_add_action)
         app.router.add_post("/apps/status", self._app_status_action)
+        # Agent-backed endpoints: each runs a Brain tool-use turn off-loop and
+        # returns JSON for the page's fetch calls.
+        app.router.add_post("/api/next-action", self._api_next_action)
+        app.router.add_post("/api/shrink", self._api_shrink)
+        app.router.add_post("/api/stall-check", self._api_stall_check)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._config.web_port)
@@ -294,6 +338,89 @@ class Dashboard:
             app_row.updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             return f"{app_row.company} — {app_row.role}: {old} -> {status}."
 
+    # -- agent-backed endpoints --------------------------------------------------
+
+    async def _api_next_action(self, request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        force = bool(body.get("force"))
+        result = await asyncio.to_thread(self._generate_next_action, force)
+        return web.json_response(result)
+
+    async def _api_shrink(self, request: web.Request) -> web.Response:
+        body = await _json_body(request)
+        current = str(body.get("current", "")).strip()
+        if not current:
+            return web.json_response({"ok": False, "text": "Nothing to shrink."})
+        result = await asyncio.to_thread(self._generate_shrink, current)
+        return web.json_response(result)
+
+    async def _api_stall_check(self, request: web.Request) -> web.Response:
+        result = await asyncio.to_thread(self._run_stall_check)
+        return web.json_response(result)
+
+    def _hero_snapshot(self) -> dict[str, Any] | None:
+        """The hero target: the agent's own pick for the top active project."""
+        with self._session_factory() as session:
+            return _pick_hero(session)
+
+    def _generate_next_action(self, force: bool) -> dict[str, Any]:
+        """Cached-or-generated concrete next step for the hero task."""
+        hero = self._hero_snapshot()
+        if hero is None:
+            return {"ok": False, "text": "No active project with a live task."}
+        cached = self._cached_step(hero)
+        if cached is not None and not force:
+            return {"ok": True, "text": cached, "cached": True}
+        prompt = _NEXT_ACTION_PROMPT.format(project=hero["project"])
+        return self._brain_step(prompt, hero)
+
+    def _generate_shrink(self, current: str) -> dict[str, Any]:
+        hero = self._hero_snapshot()
+        if hero is None:
+            return {"ok": False, "text": "No active project with a live task."}
+        prompt = _SHRINK_PROMPT.format(project=hero["project"], current=current)
+        return self._brain_step(prompt, hero)
+
+    def _brain_step(self, prompt: str, hero: dict[str, Any]) -> dict[str, Any]:
+        """One unlogged Brain turn; cache and return the step it produces."""
+        try:
+            text = self._brain.respond(prompt, log=False)
+        except Exception:
+            logger.exception("Brain call from dashboard failed")
+            return {"ok": False, "text": ""}
+        if not text or text == _BRAIN_FALLBACK:
+            return {"ok": False, "text": text}
+        self._next_cache[hero["project_id"]] = {
+            "step": text,
+            "task_id": hero["task_id"],
+            "task_updated_at": hero["updated_at"],
+            "expires_at": time.monotonic() + _NEXT_ACTION_TTL_SECONDS,
+        }
+        return {"ok": True, "text": text, "cached": False}
+
+    def _run_stall_check(self) -> dict[str, Any]:
+        """A logged Brain turn: real check-in that may write a stall_events row."""
+        hero = self._hero_snapshot()
+        project = hero["project"] if hero else "my top project"
+        try:
+            text = self._brain.respond(_STALL_CHECK_PROMPT.format(project=project))
+        except Exception:
+            logger.exception("Stall check from dashboard failed")
+            return {"ok": False, "text": "Stall check failed — try again."}
+        return {"ok": bool(text) and text != _BRAIN_FALLBACK, "text": text}
+
+    def _cached_step(self, hero: dict[str, Any]) -> str | None:
+        """The cached generated step, if it matches this exact task row and is fresh."""
+        entry = self._next_cache.get(hero["project_id"])
+        if (
+            entry is not None
+            and entry["task_id"] == hero["task_id"]
+            and entry["task_updated_at"] == hero["updated_at"]
+            and entry["expires_at"] > time.monotonic()
+        ):
+            return entry["step"]
+        return None
+
     def _load_state(self) -> dict[str, Any]:
         """Snapshot everything the page shows into plain dicts (no live ORM rows)."""
         with self._session_factory() as session:
@@ -324,23 +451,11 @@ class Dashboard:
                 .limit(_RECENT_CAPTURES)
             ).all()
             project_names = {p.id: p.name for p in projects}
-            # The hero next action: among live is_next tasks on active projects,
-            # the one whose project has the highest priority.
-            priorities = {p.id: p.priority for p in projects}
-            active_ids = {p.id for p in projects if p.status == "active"}
-            next_flagged = sorted(
-                (t for t in tasks if t.is_next and t.project_id in active_ids),
-                key=lambda t: (-priorities.get(t.project_id, 0), t.id),
-            )
-            hero = (
-                {
-                    "id": next_flagged[0].id,
-                    "title": next_flagged[0].title,
-                    "project": project_names.get(next_flagged[0].project_id, ""),
-                }
-                if next_flagged
-                else None
-            )
+            hero = _pick_hero(session)
+            if hero is not None:
+                # Cache lookup only — page loads never trigger an API call
+                # themselves; the page fetches /api/next-action when this is None.
+                hero["step"] = self._cached_step(hero)
             week_ago = (datetime.now(self._tz) - timedelta(days=7)).strftime("%Y-%m-%d")
             return {
                 "hero": hero,
@@ -363,6 +478,7 @@ class Dashboard:
                         "is_next": bool(t.is_next),
                         "project_id": t.project_id,
                         "project": project_names.get(t.project_id, ""),
+                        "age_days": _age_days(t.updated_at),
                     }
                     for t in tasks
                 ],
@@ -430,6 +546,45 @@ def _parse_id(raw: Any) -> int | None:
         return None
 
 
+async def _json_body(request: web.Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+        return body if isinstance(body, dict) else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+
+
+def _pick_hero(session: Session) -> dict[str, Any] | None:
+    """The focus-zone target, chosen exactly as surface_next_action would.
+
+    ``resolve_project(None)`` is the tool's default-project rule (highest
+    priority active) and ``_next_task`` its candidate rule (is_next else oldest
+    open), so the page can never spotlight something the agent wouldn't.
+    """
+    project = resolve_project(session, None)
+    if project is None:
+        return None
+    task = _next_task(session, project.id)
+    if task is None:
+        return None
+    return {
+        "project_id": project.id,
+        "project": project.name,
+        "task_id": task.id,
+        "title": task.title,
+        "updated_at": task.updated_at,
+    }
+
+
+def _age_days(updated_at: str) -> int:
+    """Whole days since a DB timestamp; 0 when unparsable."""
+    try:
+        delta = datetime.now(timezone.utc) - parse_db_utc(updated_at)
+    except (ValueError, TypeError):
+        return 0
+    return max(0, delta.days)
+
+
 def _redirect_with_message(message: str) -> web.HTTPSeeOther:
     """Post/Redirect/Get back to the dashboard, carrying the result as a toast."""
     return web.HTTPSeeOther(f"/?msg={quote(message)}")
@@ -479,10 +634,19 @@ input[type=password], input[type=text], input[type=date] {
   color: #55e08c; margin-bottom: 4px;
 }
 .hero-task { font-size: 21px; font-weight: 700; color: #f2f4f6; line-height: 1.25; }
-.hero form { margin-top: 12px; }
-.hero button {
+.hero.busy .hero-task { opacity: 0.55; }
+.hero-parent { color: #7d8590; text-transform: none; letter-spacing: 0; }
+.hero-note { color: #d3b45e; font-size: 12px; margin-top: 4px; min-height: 0; }
+.hero-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+.hero-actions form { margin: 0; }
+.hero button.done {
   background: #1d4a2c; color: #66ffa6; border: 1px solid #2f7a48;
   font-size: 15px; font-weight: 600; padding: 8px 24px;
+}
+.stall-result {
+  margin-top: 10px; padding: 8px 11px; background: #1c1f25;
+  border: 1px solid #33290f; border-left: 3px solid #d3b45e;
+  border-radius: 8px; font-size: 13px; white-space: pre-wrap;
 }
 /* status strip */
 .strip {
@@ -506,6 +670,12 @@ input[type=password], input[type=text], input[type=date] {
   flex: 1 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
 }
+/* On narrow screens the controls would squeeze the title to nothing: let the
+   row wrap so the title keeps its own full-width line. */
+@media (max-width: 600px) {
+  .trow { flex-wrap: wrap; }
+  .ttitle { flex-basis: 100%; white-space: normal; }
+}
 .badge {
   font-size: 10.5px; padding: 1px 7px; border-radius: 9px;
   background: #262a31; color: #9aa1ab; white-space: nowrap;
@@ -519,6 +689,7 @@ input[type=password], input[type=text], input[type=date] {
 .badge.responded, .badge.offer { background: #173225; color: #6fce93; }
 .badge.interview { background: #33290f; color: #d3b45e; }
 .badge.rejected, .badge.ghosted { background: #262a31; color: #9aa1ab; }
+.badge.stale { background: #3b2320; color: #e8896f; }
 .pipeline { font-size: 13px; color: #7d8590; padding: 2px 0 4px; }
 .empty { color: #667080; font-style: italic; font-size: 13px; padding: 4px 0; }
 .toast {
@@ -545,13 +716,81 @@ details[open] > summary::before { content: "\\2212 "; }
 """
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, script: str = "") -> str:
+    script_tag = f"<script>{script}</script>" if script else ""
     return (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{html.escape(title)}</title><style>{_STYLE}</style></head>"
-        f"<body>{body}</body></html>"
+        f"<body>{body}{script_tag}</body></html>"
     )
+
+
+# Page script for the agent-backed hero: fetches the generated next action when
+# no fresh cached one was embedded, and drives the shrink / regenerate / stall
+# buttons. On any failure it falls back to the stored task title.
+_HERO_SCRIPT = """
+const hero = document.getElementById('hero');
+if (hero) {
+  const step = document.getElementById('hero-step');
+  const note = document.getElementById('hero-note');
+  const stored = hero.dataset.stored;
+  let busy = false;
+  async function agent(path, body) {
+    if (busy) return null;
+    busy = true;
+    hero.classList.add('busy');
+    const prev = step.textContent;
+    step.textContent = 'Thinking\\u2026';
+    note.textContent = '';
+    try {
+      const r = await fetch(path, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body || {}),
+      });
+      if (!r.ok) throw new Error(String(r.status));
+      const data = await r.json();
+      if (!data.ok) throw new Error('agent');
+      step.textContent = data.text;
+      return data;
+    } catch (err) {
+      step.textContent = prev !== 'Thinking\\u2026' ? prev : stored;
+      note.textContent = 'Agent unavailable \\u2014 showing the stored task.';
+      return null;
+    } finally {
+      busy = false;
+      hero.classList.remove('busy');
+    }
+  }
+  document.getElementById('btn-shrink').addEventListener('click', function () {
+    agent('/api/shrink', {current: step.textContent});
+  });
+  document.getElementById('btn-regen').addEventListener('click', function () {
+    agent('/api/next-action', {force: true});
+  });
+  const stallBtn = document.getElementById('btn-stall');
+  const stallBox = document.getElementById('stall-result');
+  stallBtn.addEventListener('click', async function () {
+    stallBtn.disabled = true;
+    stallBox.hidden = false;
+    stallBox.textContent = 'Checking\\u2026';
+    try {
+      const r = await fetch('/api/stall-check', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}',
+      });
+      const data = await r.json();
+      stallBox.textContent = data.text || 'Stall check failed \\u2014 try again.';
+    } catch (err) {
+      stallBox.textContent = 'Stall check failed \\u2014 try again.';
+    }
+    stallBtn.disabled = false;
+  });
+  if (hero.dataset.generate === '1') agent('/api/next-action', {});
+}
+"""
 
 
 def _html_response(text: str, status: int = 200) -> web.Response:
@@ -596,25 +835,42 @@ def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") 
         _render_quick_add(state["projects"]),
         f"<div class='grid'><div>{''.join(left)}</div><div>{''.join(right)}</div></div>",
     ]
-    return _page("Spotter", "".join(sections))
+    return _page("Spotter", "".join(sections), script=_HERO_SCRIPT)
 
 
 def _render_hero(hero: dict[str, Any] | None) -> str:
-    """The focus zone: the single next action, or a nudge to pick one."""
+    """The focus zone: an agent-generated concrete step, not the raw task title.
+
+    Server-side it embeds the cached step when one is fresh; otherwise it shows
+    the stored task title and marks itself ``data-generate='1'`` so the page
+    script fetches a generated step (with a loading state) after load.
+    """
     if hero is None:
         return (
             "<div class='hero'><div class='hero-label'>Next action</div>"
-            "<div class='hero-task muted'>Nothing is flagged as next. Pick one task "
-            "below, or ask Spotter in chat what to start on.</div></div>"
+            "<div class='hero-task muted'>No active project with a live task. Add "
+            "one below, or ask Spotter in chat what to start on.</div></div>"
         )
+    step = hero.get("step")
     return (
-        "<div class='hero'>"
-        f"<div class='hero-label'>Next action · {html.escape(hero['project'])}</div>"
-        f"<div class='hero-task'>{html.escape(hero['title'])}</div>"
+        f"<div class='hero' id='hero' data-generate='{'0' if step else '1'}' "
+        f"data-stored='{html.escape(hero['title'], quote=True)}'>"
+        "<div class='hero-label'>"
+        f"Next action · {html.escape(hero['project'])} "
+        f"<span class='hero-parent'>· task: {html.escape(hero['title'])}</span></div>"
+        f"<div class='hero-task' id='hero-step'>{html.escape(step or hero['title'])}</div>"
+        "<div class='hero-note' id='hero-note'></div>"
+        "<div class='hero-actions'>"
         "<form method='post' action='/tasks/status'>"
-        f"<input type='hidden' name='id' value='{hero['id']}'>"
+        f"<input type='hidden' name='id' value='{hero['task_id']}'>"
         "<input type='hidden' name='status' value='done'>"
-        "<button>&#10003; Done</button></form></div>"
+        "<button class='done'>&#10003; Done</button></form>"
+        "<button type='button' id='btn-shrink'>Too big &mdash; shrink it</button>"
+        "<button type='button' id='btn-regen' title='Regenerate the next action'>&#8635;</button>"
+        "<button type='button' id='btn-stall'>Am I stalling?</button>"
+        "</div>"
+        "<div id='stall-result' class='stall-result' hidden></div>"
+        "</div>"
     )
 
 
@@ -686,6 +942,15 @@ def _render_task_row(task: dict[str, Any]) -> str:
         for s in statuses
     )
     next_badge = "<span class='badge next'>next</span>" if task["is_next"] else ""
+    # Staleness: any task untouched 3+ days gets a quiet age marker; a stale
+    # is_next task gets a louder one — it's the thing supposedly in progress.
+    age = task.get("age_days", 0)
+    if age >= _STALE_AFTER_DAYS:
+        tip = f"title='no status change in {age} days'"
+        if task["is_next"]:
+            next_badge += f" <span class='badge stale' {tip}>{age}d &mdash; stalling?</span>"
+        else:
+            next_badge += f" <span class='muted small' {tip}>{age}d</span>"
     return (
         "<div class='trow'>"
         f"<span class='ttitle'>{html.escape(task['title'])}</span>{next_badge}"

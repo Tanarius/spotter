@@ -28,7 +28,7 @@ import hashlib
 import hmac
 import html
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -324,7 +324,27 @@ class Dashboard:
                 .limit(_RECENT_CAPTURES)
             ).all()
             project_names = {p.id: p.name for p in projects}
+            # The hero next action: among live is_next tasks on active projects,
+            # the one whose project has the highest priority.
+            priorities = {p.id: p.priority for p in projects}
+            active_ids = {p.id for p in projects if p.status == "active"}
+            next_flagged = sorted(
+                (t for t in tasks if t.is_next and t.project_id in active_ids),
+                key=lambda t: (-priorities.get(t.project_id, 0), t.id),
+            )
+            hero = (
+                {
+                    "id": next_flagged[0].id,
+                    "title": next_flagged[0].title,
+                    "project": project_names.get(next_flagged[0].project_id, ""),
+                }
+                if next_flagged
+                else None
+            )
+            week_ago = (datetime.now(self._tz) - timedelta(days=7)).strftime("%Y-%m-%d")
             return {
+                "hero": hero,
+                "apps_recent_count": sum(1 for a in apps if a.date_applied >= week_ago),
                 "projects": [
                     {
                         "id": p.id,
@@ -341,6 +361,7 @@ class Dashboard:
                         "title": t.title,
                         "status": t.status,
                         "is_next": bool(t.is_next),
+                        "project_id": t.project_id,
                         "project": project_names.get(t.project_id, ""),
                     }
                     for t in tasks
@@ -420,62 +441,106 @@ _STYLE = """
 :root { color-scheme: dark; }
 * { box-sizing: border-box; margin: 0; }
 body {
-  background: #14161a; color: #d7dae0;
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-  max-width: 720px; margin: 0 auto; padding: 16px 12px 48px;
+  background: #101216; color: #d5d9df;
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  max-width: 1100px; margin: 0 auto; padding: 12px 14px 48px;
 }
-h1 { font-size: 19px; margin: 4px 0 16px; color: #f0f2f5; }
+h1 { font-size: 16px; color: #f0f2f5; }
 h2 {
-  font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: #8a919c; margin: 24px 0 8px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #7d8590; margin: 20px 0 4px;
 }
-.card {
-  background: #1c1f25; border: 1px solid #2a2e36; border-radius: 8px;
-  padding: 10px 12px; margin-bottom: 8px;
+.muted { color: #7d8590; }
+.small { font-size: 12px; }
+b { color: #e8eaed; font-weight: 600; }
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.topbar form { margin: 0; }
+button, input[type=submit] {
+  background: #262a31; color: #d5d9df; border: 1px solid #343a43;
+  border-radius: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer;
 }
-.row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.title { font-weight: 600; color: #eceef1; }
-.muted { color: #8a919c; font-size: 13px; }
+button.mini { padding: 2px 9px; font-size: 12px; line-height: 1.4; }
+button.accent { background: #16341f; color: #55e08c; border-color: #275c38; }
+select {
+  background: #262a31; color: #d5d9df; border: 1px solid #343a43;
+  border-radius: 6px; padding: 2px 6px; font-size: 12px;
+}
+input[type=password], input[type=text], input[type=date] {
+  background: #191c21; color: #d5d9df; border: 1px solid #343a43;
+  border-radius: 6px; padding: 7px 10px; font-size: 14px; width: 100%;
+}
+/* focus zone */
+.hero {
+  background: #14211a; border: 1px solid #275c38; border-left: 4px solid #3ddc84;
+  border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+}
+.hero-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #55e08c; margin-bottom: 4px;
+}
+.hero-task { font-size: 21px; font-weight: 700; color: #f2f4f6; line-height: 1.25; }
+.hero form { margin-top: 12px; }
+.hero button {
+  background: #1d4a2c; color: #66ffa6; border: 1px solid #2f7a48;
+  font-size: 15px; font-weight: 600; padding: 8px 24px;
+}
+/* status strip */
+.strip {
+  display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 8px 2px;
+  font-size: 13px; color: #7d8590; border-bottom: 1px solid #23262d;
+}
+/* two-column layout */
+.grid { display: grid; grid-template-columns: 1fr; gap: 0 32px; }
+@media (min-width: 900px) { .grid { grid-template-columns: 1.15fr 0.85fr; } }
+/* let columns shrink below content width so ellipsized rows can't overflow */
+.grid > div { min-width: 0; }
+/* compact rows */
+.projhead { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; padding-bottom: 2px; }
+.pname { font-weight: 600; color: #e8eaed; }
+.trow {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  border-bottom: 1px solid #1c1f25;
+}
+.trow form { margin: 0; display: flex; }
+.ttitle {
+  flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
 .badge {
-  font-size: 11px; padding: 1px 8px; border-radius: 10px;
-  background: #2a2e36; color: #aeb4bd; white-space: nowrap;
+  font-size: 10.5px; padding: 1px 7px; border-radius: 9px;
+  background: #262a31; color: #9aa1ab; white-space: nowrap;
 }
 .badge.active, .badge.open { background: #173225; color: #6fce93; }
 .badge.in_progress { background: #162c3d; color: #62b0e8; }
 .badge.paused, .badge.waiting { background: #33290f; color: #d3b45e; }
-.badge.done { background: #2a2e36; color: #8a919c; }
+.badge.done { background: #262a31; color: #9aa1ab; }
 .badge.next { background: #3b2320; color: #e8896f; }
 .badge.applied, .badge.screen { background: #162c3d; color: #62b0e8; }
 .badge.responded, .badge.offer { background: #173225; color: #6fce93; }
 .badge.interview { background: #33290f; color: #d3b45e; }
-.badge.rejected, .badge.ghosted { background: #2a2e36; color: #8a919c; }
-.empty { color: #6b7280; font-style: italic; padding: 4px 2px; }
-.topbar { display: flex; justify-content: space-between; align-items: center; }
-.topbar form { margin: 0; }
-button, input[type=submit] {
-  background: #2a2e36; color: #d7dae0; border: 1px solid #3a3f49;
-  border-radius: 6px; padding: 6px 14px; font-size: 14px; cursor: pointer;
-}
-button.primary { background: #173225; color: #6fce93; border-color: #2c5b40; }
-.actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.actions form { display: flex; gap: 6px; margin: 0; }
-select {
-  background: #2a2e36; color: #d7dae0; border: 1px solid #3a3f49;
-  border-radius: 6px; padding: 5px 8px; font-size: 14px;
-}
+.badge.rejected, .badge.ghosted { background: #262a31; color: #9aa1ab; }
+.pipeline { font-size: 13px; color: #7d8590; padding: 2px 0 4px; }
+.empty { color: #667080; font-style: italic; font-size: 13px; padding: 4px 0; }
 .toast {
-  background: #162c3d; color: #62b0e8; border: 1px solid #1f4159;
-  border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 14px;
+  background: #14273a; color: #62b0e8; border: 1px solid #1f4159;
+  border-radius: 8px; padding: 7px 11px; margin-bottom: 10px; font-size: 13px;
 }
-input[type=password], input[type=text], input[type=date] {
-  background: #14161a; color: #d7dae0; border: 1px solid #3a3f49;
-  border-radius: 6px; padding: 8px 10px; font-size: 15px; width: 100%;
+/* collapsibles */
+details { margin: 6px 0; }
+summary {
+  cursor: pointer; color: #7d8590; font-size: 13px; list-style: none;
+  -webkit-user-select: none; user-select: none;
 }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "+ "; color: #55e08c; }
+details[open] > summary::before { content: "\\2212 "; }
+.qa-row { display: flex; gap: 6px; margin-top: 6px; }
+.qa-row input[type=text] { flex: 1 1 auto; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
 @media (max-width: 480px) { .grid2 { grid-template-columns: 1fr; } }
 .login-wrap { max-width: 320px; margin: 18vh auto 0; }
-.login-wrap h1 { text-align: center; }
+.login-wrap h1 { text-align: center; margin-bottom: 8px; }
 .error { color: #e8896f; font-size: 14px; margin-top: 8px; }
 """
 
@@ -508,142 +573,110 @@ def _render_login(error: bool) -> str:
 
 def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") -> str:
     toast = f"<p class='toast'>{html.escape(message)}</p>" if message else ""
-    sections = [
-        "<div class='topbar'><h1>Spotter</h1>"
-        "<form method='post' action='/logout'><button>Log out</button></form></div>",
-        toast,
-        "<h2>Quick add</h2>",
-        _render_quick_add(state["projects"]),
-        "<h2>Projects</h2>",
-        _render_projects(state["projects"]),
-        "<h2>Open tasks</h2>",
-        _render_tasks(state["tasks"]),
-        "<h2>Active stalls</h2>",
+    left = [
+        "<h2>Work</h2>",
+        _render_work(state["projects"], state["tasks"]),
         _render_stalls(state["stalls"]),
+    ]
+    right = [
         "<h2>Job applications</h2>",
+        _render_pipeline(state["apps"]),
         _render_app_add(state["today_local"]),
         _render_apps(state["apps"]),
-        "<h2>Recent captures</h2>",
-        _render_captures(state["captures"]),
-        f"<h2>Upcoming triggers <span class='muted'>({html.escape(timezone_name)})</span></h2>",
+        f"<h2>Upcoming <span class='muted'>({html.escape(timezone_name)})</span></h2>",
         _render_triggers(state["triggers"]),
+        _render_captures(state["captures"]),
+    ]
+    sections = [
+        "<div class='topbar'><h1>Spotter</h1>"
+        "<form method='post' action='/logout'><button class='mini'>Log out</button></form></div>",
+        toast,
+        _render_hero(state["hero"]),
+        _render_strip(state),
+        _render_quick_add(state["projects"]),
+        f"<div class='grid'><div>{''.join(left)}</div><div>{''.join(right)}</div></div>",
     ]
     return _page("Spotter", "".join(sections))
 
 
+def _render_hero(hero: dict[str, Any] | None) -> str:
+    """The focus zone: the single next action, or a nudge to pick one."""
+    if hero is None:
+        return (
+            "<div class='hero'><div class='hero-label'>Next action</div>"
+            "<div class='hero-task muted'>Nothing is flagged as next. Pick one task "
+            "below, or ask Spotter in chat what to start on.</div></div>"
+        )
+    return (
+        "<div class='hero'>"
+        f"<div class='hero-label'>Next action · {html.escape(hero['project'])}</div>"
+        f"<div class='hero-task'>{html.escape(hero['title'])}</div>"
+        "<form method='post' action='/tasks/status'>"
+        f"<input type='hidden' name='id' value='{hero['id']}'>"
+        "<input type='hidden' name='status' value='done'>"
+        "<button>&#10003; Done</button></form></div>"
+    )
+
+
+def _render_strip(state: dict[str, Any]) -> str:
+    next_fire = state["triggers"][0]["fire_at_local"] if state["triggers"] else "nothing scheduled"
+    stall_count = len(state["stalls"])
+    return (
+        "<div class='strip'>"
+        f"<span><b>{len(state['tasks'])}</b> open tasks</span>"
+        f"<span><b>{stall_count}</b> stall{'s' if stall_count != 1 else ''}</span>"
+        f"<span><b>{state['apps_recent_count']}</b> apps this week</span>"
+        f"<span>next trigger: <b>{html.escape(next_fire)}</b></span>"
+        "</div>"
+    )
+
+
 def _render_quick_add(projects: list[dict[str, Any]]) -> str:
-    """Two small forms: a new task (title + optional project) and a capture."""
+    """Collapsed quick-add: one summary line expanding to two slim form rows."""
     options = "<option value=''>(no project)</option>" + "".join(
         f"<option value='{p['id']}'>{html.escape(p['name'])}</option>"
         for p in projects
         if p["status"] == "active"
     )
     return (
-        "<div class='card'><form method='post' action='/tasks/add' class='stack'>"
-        "<input type='text' name='title' placeholder='New task title'>"
-        f"<div class='actions'><select name='project_id'>{options}</select>"
-        "<button>Add task</button></div></form></div>"
-        "<div class='card'><form method='post' action='/captures/add' class='stack'>"
+        "<details><summary>Quick add</summary>"
+        "<form method='post' action='/tasks/add' class='qa-row'>"
+        "<input type='text' name='title' placeholder='New task…'>"
+        f"<select name='project_id'>{options}</select>"
+        "<button class='accent'>Add</button></form>"
+        "<form method='post' action='/captures/add' class='qa-row'>"
         "<input type='text' name='content' placeholder='Capture a thought, link, follow-up…'>"
-        "<div class='actions'><button>Capture</button></div></form></div>"
+        "<button>Capture</button></form>"
+        "</details>"
     )
 
 
-def _render_app_add(today_local: str) -> str:
-    return (
-        "<div class='card'><form method='post' action='/apps/add' class='stack'>"
-        "<div class='grid2'>"
-        "<input type='text' name='company' placeholder='Company'>"
-        "<input type='text' name='role' placeholder='Role'>"
-        "<input type='text' name='source' placeholder='Source (LinkedIn, referral…)'>"
-        f"<input type='date' name='date_applied' value='{html.escape(today_local)}'>"
-        "</div>"
-        "<input type='text' name='notes' placeholder='Notes (optional)'>"
-        "<div class='actions'><button>Add application</button></div></form></div>"
-    )
-
-
-def _render_apps(apps: list[dict[str, Any]]) -> str:
-    if not apps:
-        return "<p class='empty'>No applications tracked yet.</p>"
-    cards = []
-    for a in apps:
-        options = "".join(
-            f"<option value='{s}'{' selected' if s == a['status'] else ''}>{s}</option>"
-            for s in _APP_STATUSES
-        )
-        source = f" · {html.escape(a['source'])}" if a["source"] else ""
-        notes = f"<div class='muted'>{html.escape(a['notes'])}</div>" if a["notes"] else ""
-        cards.append(
-            "<div class='card'><div class='row'>"
-            f"<span class='title'>{html.escape(a['company'])} — {html.escape(a['role'])}</span>"
-            f"<span class='badge {html.escape(a['status'])}'>{html.escape(a['status'])}</span>"
-            f"<span class='muted'>{html.escape(a['date_applied'])}{source}</span></div>"
-            f"{notes}"
-            "<div class='actions'><form method='post' action='/apps/status'>"
-            f"<input type='hidden' name='id' value='{a['id']}'>"
-            f"<select name='status'>{options}</select> <button>Set</button></form></div></div>"
-        )
-    return "".join(cards)
-
-
-def _render_captures(captures: list[dict[str, Any]]) -> str:
-    if not captures:
-        return "<p class='empty'>Nothing captured yet.</p>"
-    cards = []
-    for c in captures:
-        category = f"<span class='badge'>{html.escape(c['category'])}</span>" if c["category"] else ""
-        cards.append(
-            "<div class='card'><div class='row'>"
-            f"<span>{html.escape(c['content'])}</span>{category}"
-            f"<span class='muted'>#{c['id']} · {html.escape(c['source'])} · "
-            f"{html.escape(c['created_at'])}</span></div></div>"
-        )
-    return "".join(cards)
-
-
-def _render_projects(projects: list[dict[str, Any]]) -> str:
-    if not projects:
-        return "<p class='empty'>No projects.</p>"
-    cards = []
-    for p in projects:
-        description = (
-            f"<div class='muted'>{html.escape(p['description'])}</div>"
-            if p["description"]
-            else ""
-        )
-        cards.append(
-            "<div class='card'><div class='row'>"
-            f"<span class='title'>{html.escape(p['name'])}</span>"
-            f"<span class='badge {html.escape(p['status'])}'>{html.escape(p['status'])}</span>"
-            f"<span class='muted'>priority {p['priority']}</span>"
-            f"</div>{description}</div>"
-        )
-    return "".join(cards)
-
-
-def _render_tasks(tasks: list[dict[str, Any]]) -> str:
-    if not tasks:
-        return "<p class='empty'>No open tasks.</p>"
-    cards = []
+def _render_work(projects: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> str:
+    """Open tasks grouped under compact project headers, in priority order."""
+    if not projects and not tasks:
+        return "<p class='empty'>No projects or tasks.</p>"
+    by_project: dict[Any, list[dict[str, Any]]] = {}
     for t in tasks:
-        next_badge = "<span class='badge next'>next</span>" if t["is_next"] else ""
-        project = f"<span class='muted'>{html.escape(t['project'])}</span>" if t["project"] else ""
-        cards.append(
-            "<div class='card'><div class='row'>"
-            f"<span class='title'>#{t['id']} {html.escape(t['title'])}</span>"
-            f"<span class='badge {html.escape(t['status'])}'>{html.escape(t['status'])}</span>"
-            f"{next_badge}{project}</div>"
-            f"{_render_task_actions(t)}</div>"
+        by_project.setdefault(t["project_id"], []).append(t)
+    parts: list[str] = []
+    for p in projects:  # already ordered by priority desc
+        group = by_project.pop(p["id"], [])
+        parts.append(
+            "<div class='projhead'>"
+            f"<span class='pname'>{html.escape(p['name'])}</span>"
+            f"<span class='badge {html.escape(p['status'])}'>{html.escape(p['status'])}</span>"
+            f"<span class='muted small'>p{p['priority']} · {len(group)} open</span></div>"
         )
-    return "".join(cards)
+        parts.extend(_render_task_row(t) for t in group)
+    unlinked = by_project.pop(None, [])
+    if unlinked:
+        parts.append("<div class='projhead'><span class='pname muted'>No project</span></div>")
+        parts.extend(_render_task_row(t) for t in unlinked)
+    return "".join(parts)
 
 
-def _render_task_actions(task: dict[str, Any]) -> str:
-    """A one-click Done button plus a status dropdown, each its own POST form."""
-    task_id = task["id"]
-    # The dropdown always shows the task's current status, even one (like
-    # in_progress) that isn't offered as a choice here.
+def _render_task_row(task: dict[str, Any]) -> str:
+    """One tight row: title, badge, ✓ button, auto-submitting status dropdown."""
     statuses = list(_STATUS_CHOICES)
     if task["status"] not in statuses:
         statuses.insert(0, task["status"])
@@ -652,47 +685,118 @@ def _render_task_actions(task: dict[str, Any]) -> str:
         f"{html.escape(s)}</option>"
         for s in statuses
     )
+    next_badge = "<span class='badge next'>next</span>" if task["is_next"] else ""
     return (
-        "<div class='actions'>"
-        f"<form method='post' action='/tasks/status'>"
-        f"<input type='hidden' name='id' value='{task_id}'>"
+        "<div class='trow'>"
+        f"<span class='ttitle'>{html.escape(task['title'])}</span>{next_badge}"
+        f"<span class='badge {html.escape(task['status'])}'>{html.escape(task['status'])}</span>"
+        "<form method='post' action='/tasks/status'>"
+        f"<input type='hidden' name='id' value='{task['id']}'>"
         "<input type='hidden' name='status' value='done'>"
-        "<button class='primary'>&#10003; Done</button></form>"
-        f"<form method='post' action='/tasks/status'>"
-        f"<input type='hidden' name='id' value='{task_id}'>"
-        f"<select name='status'>{options}</select> "
-        "<button>Set</button></form>"
+        "<button class='mini accent' title='Mark done'>&#10003;</button></form>"
+        "<form method='post' action='/tasks/status'>"
+        f"<input type='hidden' name='id' value='{task['id']}'>"
+        f"<select name='status' onchange='this.form.submit()'>{options}</select></form>"
         "</div>"
     )
 
 
-def _render_stalls(stalls: list[dict[str, Any]]) -> str:
-    if not stalls:
-        return "<p class='empty'>No active stalls.</p>"
-    cards = []
-    for s in stalls:
-        cards.append(
-            "<div class='card'><div class='row'>"
-            f"<span class='title'>{html.escape(s['project'])}</span>"
-            f"<span class='muted'>#{s['id']} · {html.escape(s['created_at'])}</span></div>"
-            f"<div>Avoiding: {html.escape(s['description'])}</div>"
-            "<div class='actions'><form method='post' action='/stalls/resolve'>"
-            f"<input type='hidden' name='id' value='{s['id']}'>"
-            "<button>Mark resolved</button></form></div></div>"
+def _render_pipeline(apps: list[dict[str, Any]]) -> str:
+    """One glanceable funnel line: counts per status."""
+    if not apps:
+        return ""
+    counts: dict[str, int] = {}
+    for a in apps:
+        counts[a["status"]] = counts.get(a["status"], 0) + 1
+    funnel = ["applied", "responded", "screen", "interview", "offer"]
+    parts = [f"<b>{counts.get(s, 0)}</b> {s}" for s in funnel]
+    parts += [f"<b>{counts[s]}</b> {s}" for s in ("rejected", "ghosted") if counts.get(s)]
+    return f"<div class='pipeline'>{' · '.join(parts)}</div>"
+
+
+def _render_app_add(today_local: str) -> str:
+    return (
+        "<details><summary>Add application</summary>"
+        "<form method='post' action='/apps/add' class='stack'>"
+        "<div class='grid2'>"
+        "<input type='text' name='company' placeholder='Company'>"
+        "<input type='text' name='role' placeholder='Role'>"
+        "<input type='text' name='source' placeholder='Source (LinkedIn, referral…)'>"
+        f"<input type='date' name='date_applied' value='{html.escape(today_local)}'>"
+        "</div>"
+        "<input type='text' name='notes' placeholder='Notes (optional)'>"
+        "<div><button class='accent'>Add application</button></div></form></details>"
+    )
+
+
+def _render_apps(apps: list[dict[str, Any]]) -> str:
+    if not apps:
+        return "<p class='empty'>No applications tracked yet.</p>"
+    rows = []
+    for a in apps:
+        options = "".join(
+            f"<option value='{s}'{' selected' if s == a['status'] else ''}>{s}</option>"
+            for s in _APP_STATUSES
         )
-    return "".join(cards)
+        tooltip_bits = [b for b in (a["source"], a["notes"]) if b]
+        tooltip = f" title='{html.escape(' · '.join(tooltip_bits), quote=True)}'" if tooltip_bits else ""
+        rows.append(
+            f"<div class='trow'{tooltip}>"
+            f"<span class='ttitle'>{html.escape(a['company'])} "
+            f"<span class='muted'>— {html.escape(a['role'])}</span></span>"
+            f"<span class='badge {html.escape(a['status'])}'>{html.escape(a['status'])}</span>"
+            "<form method='post' action='/apps/status'>"
+            f"<input type='hidden' name='id' value='{a['id']}'>"
+            f"<select name='status' onchange='this.form.submit()'>{options}</select></form>"
+            f"<span class='muted small' style='white-space:nowrap'>{html.escape(a['date_applied'])}</span>"
+            "</div>"
+        )
+    return "".join(rows)
+
+
+def _render_captures(captures: list[dict[str, Any]]) -> str:
+    if not captures:
+        return ""
+    rows = "".join(
+        "<div class='trow'>"
+        f"<span class='ttitle' title='{html.escape(c['content'], quote=True)}'>"
+        f"{html.escape(c['content'])}</span>"
+        + (f"<span class='badge'>{html.escape(c['category'])}</span>" if c["category"] else "")
+        + f"<span class='muted small'>{html.escape(c['source'])}</span></div>"
+        for c in captures
+    )
+    return (
+        f"<details><summary>Recent captures ({len(captures)})</summary>{rows}</details>"
+    )
+
+
+def _render_stalls(stalls: list[dict[str, Any]]) -> str:
+    """Compact stall rows; the whole section disappears when there are none."""
+    if not stalls:
+        return ""
+    rows = "".join(
+        "<div class='trow'>"
+        f"<span class='ttitle' title='{html.escape(s['description'], quote=True)}'>"
+        f"<b>{html.escape(s['project'])}</b> — avoiding: {html.escape(s['description'])}</span>"
+        "<form method='post' action='/stalls/resolve'>"
+        f"<input type='hidden' name='id' value='{s['id']}'>"
+        "<button class='mini'>Resolve</button></form></div>"
+        for s in stalls
+    )
+    return f"<h2>Stalls</h2>{rows}"
 
 
 def _render_triggers(triggers: list[dict[str, Any]]) -> str:
     if not triggers:
         return "<p class='empty'>Nothing scheduled.</p>"
-    cards = []
+    rows = []
     for tr in triggers:
         recurrence = f" · {html.escape(tr['recurrence'])}" if tr["recurrence"] else ""
-        cards.append(
-            "<div class='card'><div class='row'>"
-            f"<span class='title'>{html.escape(tr['fire_at_local'])}</span>"
-            f"<span class='badge'>{html.escape(tr['kind'])}{recurrence}</span></div>"
-            f"<div class='muted'>{html.escape(tr['message'])}</div></div>"
+        rows.append(
+            "<div class='trow'>"
+            f"<span style='white-space:nowrap'><b>{html.escape(tr['fire_at_local'])}</b></span>"
+            f"<span class='badge'>{html.escape(tr['kind'])}{recurrence}</span>"
+            f"<span class='ttitle muted small' title='{html.escape(tr['message'], quote=True)}'>"
+            f"{html.escape(tr['message'])}</span></div>"
         )
-    return "".join(cards)
+    return "".join(rows)

@@ -2,9 +2,9 @@
 
 **A single-user AI agent that externalizes executive function — built to interrupt the exact points where projects stall.**
 
-Spotter is a personal accountability agent that runs on Telegram. Instead of a passive to-do app you have to maintain, it's an agent you talk to in plain language: it captures what you tell it, tracks what you're working on, surfaces the concrete next action when a task feels too big, and names it directly when you're avoiding the finish line. It runs 24/7, sends one proactive morning brief, and otherwise waits until you come to it.
+Spotter is a personal accountability agent that runs on Telegram with a companion web dashboard. Instead of a passive to-do app you have to maintain, it's an agent you talk to in plain language: it captures what you tell it, tracks what you're working on and what each project is *for*, surfaces the concrete next action when a task feels too big, and names it directly when you're avoiding the finish line. It runs 24/7, sends a morning brief and an evening check-in, fires reminders you set in plain language, and otherwise waits until you come to it.
 
-Built with Python, the Anthropic API as the reasoning core, SQLite for layered memory, and deployed on Railway.
+Built with Python, the Anthropic API as the reasoning core, SQLite for layered memory, and deployed on Railway as a single process — bot, scheduler, and dashboard on one asyncio event loop.
 
 ---
 
@@ -38,7 +38,7 @@ Telegram message
 
 **Why the model routes instead of a classifier:** a separate intent classifier would mean a second model to tune and a coordination problem when the two disagree. A well-described tool schema lets one model decide competently. The trade-off (tool schema in context every turn) is negligible at single-user scale, and the reduction in moving parts is meaningful.
 
-### The 8 tools
+### The tools
 
 Each tool maps to a specific job, not a generic capability:
 
@@ -51,7 +51,21 @@ Each tool maps to a specific job, not a generic capability:
 | `query_memory` | FTS5 search across captured items, tasks, blockers, and facts |
 | `draft_message` | Draft an email/Slack/text for approval — never sends |
 | `schedule_intent` | Record a scheduling intent (no calendar write in V1) |
+| `update_task_status` | Mark tasks/projects done, paused, waiting, reopened |
+| `schedule_reminder` | Turn "remind me at 6" into a scheduled one-shot or recurring trigger |
+| `set_project_goal` | Record a project's target state in plain language |
+| `decompose_goal` | Two-phase: read goal + current state, then write ordered milestones |
+| `update_milestone` | Advance the milestone ladder; one active per project, auto-advances on done |
+| `set_bottleneck` | Record the single most-blocking thing on a project |
 | `update_workspace_doc` | (Deferred) optional Google Doc mirror |
+
+### The goal layer
+
+Projects aren't flat task lists: each can carry a **goal** (the target state in plain language), a **current bottleneck** (the one thing most in the way), and an ordered ladder of **milestones** between the current state and the goal. `decompose_goal` is the reasoning step — the model reads the project's goal, open tasks, blockers, and recent activity, then writes the milestones that actually stand between here and there. At most one milestone is active per project; completing it auto-activates the next. This is what lets "what should I work on?" be derived from where the project is headed instead of a priority lookup.
+
+### Proactive messaging
+
+Beyond the daily morning brief and evening check-in (both assembled fresh from workspace state at fire time), `scheduled_triggers` rows drive one-shot reminders and recurring check-ins created from chat. The firing loop catches up after downtime — a missed trigger fires once on boot, then a recurring one resumes its normal schedule across DST boundaries.
 
 ### Layered memory
 
@@ -65,7 +79,18 @@ Full-text search runs over SQLite FTS5 virtual tables — keyword retrieval, no 
 
 ### Stall detection
 
-Stall detection is layered across three places rather than hardcoded: behavioral instructions in the system prompt (the agent notices patterns conversationally), the dedicated `name_the_stall` tool (which logs a structured event and dedupes against recent identical stalls), and a `/stall` command for explicit checks.
+Stall detection is layered across three places rather than hardcoded: behavioral instructions in the system prompt (the agent notices patterns conversationally), the dedicated `name_the_stall` tool (which logs a structured event and dedupes against recent identical stalls), and a `/stall` command for explicit checks. The dashboard adds passive detection: any task untouched for 3+ days shows its age, and a stale "next" task is flagged as a possible stall.
+
+### The web dashboard
+
+A password-gated dashboard served **from the same process** — same event loop as the bot and scheduler, same SQLite database, no second app. Server-rendered HTML over aiohttp; the only JavaScript is dropdown auto-submit and the agent-backed focus zone.
+
+- **Focus zone** — not the stored task title, but a concrete next step *generated by the agent* (the same `Brain` + tool loop as Telegram), cached per project and invalidated when the task changes. Buttons: **Done** (auto-advances to the next action), **Too big — shrink it** (repeatable, via `surface_next_action`'s `smaller_than`), regenerate, and **Am I stalling?** (a real logged agent turn that can record a stall).
+- **State at a glance** — status strip, tasks grouped by project priority, stalls, job-applications pipeline, upcoming triggers, recent captures.
+- **Write paths shared with chat** — dashboard buttons call the same tool handlers the model dispatches (`update_task_status`, `capture_item`), so web and Telegram can never disagree about what a write means.
+- **Auth** — a single shared secret (`DASHBOARD_PASSWORD`); if it's unset the server never binds rather than running open. HMAC session cookie (HttpOnly, SameSite=Lax, Secure behind TLS), 1-second delay on failed logins.
+
+A typical page load makes **zero** model API calls — agent output is cached and embedded server-side; a cache miss generates once in the background while the page stays usable.
 
 ---
 
@@ -74,13 +99,41 @@ Stall detection is layered across three places rather than hardcoded: behavioral
 | Layer | Choice |
 |---|---|
 | Language | Python 3.12 |
-| Interface | Telegram (`python-telegram-bot`, long polling, single-user allowlist) |
+| Interface | Telegram (`python-telegram-bot`, long polling, single-user allowlist) + aiohttp dashboard |
 | Reasoning | Anthropic API (`claude-sonnet-4-6`) |
 | Storage | SQLite (SQLAlchemy 2.x) on a persistent volume |
 | Search | SQLite FTS5 (keyword, no vectors) |
-| Scheduler | APScheduler (in-process, one morning-brief job) |
+| Scheduler | APScheduler (in-process: morning brief, evening check-in, reminders) |
 | Config | YAML prompts, env-based secrets, seed context via file or env var |
-| Hosting | Railway (single always-on worker) |
+| Hosting | Railway (single always-on process; dashboard on the injected `PORT`) |
+
+---
+
+## Running it
+
+```bash
+# local
+python -m venv .venv && .venv/Scripts/activate   # or source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env                              # fill in tokens + DASHBOARD_PASSWORD
+cp seed/context.example.yaml seed/context.yaml    # fill in your projects/facts
+python -m src.main                                # bot + scheduler + dashboard on :8080
+```
+
+Schema setup and migrations run automatically on every boot and are idempotent — new tables arrive via `create_all`, new columns via guarded `ALTER`s; nothing is ever dropped.
+
+**Deploy (Railway):** push to `main` (auto-deploy), with the service configured per `railway.toml` — all `.env.example` variables set, a volume at `/data` with `DB_PATH=/data/spotter.db`, a generated public domain for the dashboard, and exactly one instance. `PORT` is injected by Railway.
+
+| Env var | Purpose |
+|---|---|
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID` | Bot identity + single-user allowlist |
+| `ANTHROPIC_API_KEY`, `DEFAULT_MODEL` | Reasoning core |
+| `DB_PATH` | SQLite location (volume path in prod) |
+| `BRIEF_TIME`, `EVENING_TIME`, `TIMEZONE` | Daily brief / check-in schedule |
+| `SEED_CONTEXT_YAML` | Seed context in prod (file is gitignored) |
+| `DASHBOARD_PASSWORD` | Dashboard gate — unset disables the web server entirely |
+| `PORT` | Dashboard port (Railway injects; local default 8080) |
+| `GROQ_API_KEY` | Optional, unused for now |
 
 ---
 
@@ -106,10 +159,12 @@ Spotter was built in strict, verified steps, each committed only after its accep
 
 **Live** — deployed on Railway, running 24/7, in personal daily use.
 
-**Working:** the full agent loop, 7 of 8 tools, layered memory with on-demand retrieval, the scheduled morning brief, idempotent seeding, and the reliability guards above.
+**Working:** the full agent loop with 13 tools, layered memory with on-demand retrieval, the goal/milestone layer, morning brief + evening check-in + chat-created reminders with downtime catch-up, the agent-backed web dashboard with a job-applications tracker, idempotent seeding and migrations, and the reliability guards above.
+
+**In progress:** goal-aware next actions (deriving the next step from the goal and active milestone rather than the `is_next` flag), Claude Code handoff prompts, and progress-aware briefs.
 
 **Roadmap (deliberately deferred, not missing):**
-- Commitment-anchored check-ins (proactive nudges tied to stated deadlines, not clock-based)
+- Embedded dashboard chat through the same brain
 - Voice input (Whisper transcription)
 - The optional Google Doc workspace mirror
 - User identity as setup config rather than prompt text

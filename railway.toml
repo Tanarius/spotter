@@ -1,13 +1,16 @@
 # Railway deployment config for Spotter.
 #
-# Spotter is a background WORKER: it runs Telegram long-polling (getUpdates) plus
-# an APScheduler job for the morning brief. All traffic is OUTBOUND, so it needs
-# NO public domain, binds NO port, and requires no HTTP healthcheck.
+# Spotter is ONE always-on process: Telegram long-polling (getUpdates),
+# APScheduler (morning brief, evening check-in, reminders), and the password-
+# gated web dashboard, all on the same asyncio event loop. The dashboard binds
+# the Railway-injected PORT; generate a public domain on the service to reach
+# it (Settings -> Networking -> Generate Domain).
 #
 # Before deploying:
 #   1. Set every variable from .env.example in the Railway service (Variables).
 #      Required: TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USER_ID, ANTHROPIC_API_KEY,
 #      DEFAULT_MODEL, DB_PATH, BRIEF_TIME, TIMEZONE, SEED_CONTEXT_YAML.
+#      Dashboard: DASHBOARD_PASSWORD (unset = dashboard disabled, bot still runs).
 #   2. Attach a Volume mounted at /data and set DB_PATH=/data/spotter.db so the
 #      SQLite database survives redeploys.
 #   3. Run a SINGLE instance (multiple long-pollers would collide on getUpdates).

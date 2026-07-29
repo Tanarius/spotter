@@ -133,7 +133,12 @@ Schema setup and migrations run automatically on every boot and are idempotent �
 | `SEED_CONTEXT_YAML` | Seed context in prod (file is gitignored) |
 | `DASHBOARD_PASSWORD` | Dashboard gate — unset disables the web server entirely |
 | `PORT` | Dashboard port (Railway injects; local default 8080) |
+| `BACKUP_RETAIN` | Weekly DB backups to keep (default 4) |
+| `TELEGRAM_DEV_BOT_TOKEN` | **Local only** — separate dev bot so local runs never 409 against production |
+| `TELEGRAM_DEV_ALLOWED_USER_ID` | Local only, optional — allowlist override while the dev bot is active |
 | `GROQ_API_KEY` | Optional, unused for now |
+
+Change history with per-commit detail lives in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -144,6 +149,14 @@ Schema setup and migrations run automatically on every boot and are idempotent �
 **Idempotent, key-based seeding.** Seed facts carry a stable `key`; re-seeding upserts on that key rather than matching on content, so editing a fact's wording never creates a duplicate. Safe to re-run on every boot.
 
 **Reliability guards built in, not bolted on.** A hard iteration cap on the tool loop prevents cost runaway; an API error is caught and answered with a graceful message rather than crashing the bot; the scheduler's morning brief upserts on a unique date so a re-run never violates the constraint; the SQLite database lives on a persistent volume so memory survives redeploys.
+
+**Seeding bootstraps; it never enforces a snapshot.** Seed data is insert-only for anything carrying live state: tasks are keyed by (project, title) and skipped once they exist in any status (a completed task can't be resurrected by a redeploy), project status and the goal layer are never rewritten, and a fact modified at runtime permanently beats its seed version. Boot logs report exactly what the seed inserted vs. skipped.
+
+**Backups on a schedule, plus catch-up.** A weekly job snapshots the database with SQLite's online backup API (consistent even mid-write) to the same volume, pruning to the last `BACKUP_RETAIN`. Because the in-memory cron resets on every redeploy, boot also backs up whenever the newest copy is missing or older than a week — the same catch-up pattern the morning brief uses. Manual: `python -m src.backup`.
+
+**Dev/prod bot separation.** A local run with `TELEGRAM_DEV_BOT_TOKEN` set polls a separate BotFather bot, so it can never steal `getUpdates` from the deployed poller; boot logs which bot is active.
+
+**Plain-text outbound formatting.** Telegram renders markdown literally without a `parse_mode`, so every generated outbound message (brief, check-in, reminders) is sanitized at compose time — and the prompts forbid markdown in the first place.
 
 **An anti-recursion guardrail.** The system prompt explicitly instructs the agent to refuse helping build *new Spotter features* while a higher-priority project sits unfinished — because that "productive procrastination" is the exact pattern Spotter exists to interrupt. The tool is designed to resist its own scope creep.
 
@@ -159,12 +172,11 @@ Spotter was built in strict, verified steps, each committed only after its accep
 
 **Live** — deployed on Railway, running 24/7, in personal daily use.
 
-**Working:** the full agent loop with 13 tools, layered memory with on-demand retrieval, the goal/milestone layer, morning brief + evening check-in + chat-created reminders with downtime catch-up, the agent-backed web dashboard with a job-applications tracker, idempotent seeding and migrations, and the reliability guards above.
-
-**In progress:** goal-aware next actions (deriving the next step from the goal and active milestone rather than the `is_next` flag), Claude Code handoff prompts, and progress-aware briefs.
+**Working:** the full agent loop with 14 tools, layered memory with on-demand retrieval, the goal/milestone layer with goal-aware next actions and progress-aware briefs, Claude Code handoff prompts, morning brief + evening check-in + chat-created reminders with downtime catch-up, the agent-backed web dashboard with a job-applications tracker, insert-only seeding, weekly database backups with boot catch-up, dev/prod bot separation, and the reliability guards above.
 
 **Roadmap (deliberately deferred, not missing):**
 - Embedded dashboard chat through the same brain
+- Searchable conversation history (short chats currently fall out of the 20-turn replay window and aren't reachable via `query_memory`)
 - Voice input (Whisper transcription)
 - The optional Google Doc workspace mirror
 - User identity as setup config rather than prompt text

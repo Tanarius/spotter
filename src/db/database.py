@@ -3,10 +3,12 @@
 The public entrypoint is :func:`initialize_database`, which creates the SQLite
 file (and its parent directory) if missing, applies the schema (ORM tables plus
 the raw FTS5 virtual tables and triggers), runs idempotent additive migrations,
-then upserts the seeded context from ``seed/context.yaml``. ``seed/context.yaml``
-is the single source of truth for seeded projects and facts; seeding runs on
-every boot and is keyed on stable identities (project name, fact key) so it never
-duplicates rows and always reflects the file. Everything here is safe to re-run.
+then seeds context from ``seed/context.yaml``. Seeding runs on every boot,
+keyed on stable identities (project name, task title, fact key), and is
+INSERT-ONLY for anything carrying live state: it bootstraps a fresh database
+but never enforces a snapshot on a live one — task status, project status, the
+goal layer, and runtime-modified facts are never rewritten. Everything here is
+safe to re-run.
 """
 
 from __future__ import annotations
@@ -33,14 +35,19 @@ SEED_PATH: Path = ROOT_DIR / "seed" / "context.yaml"
 
 @dataclass(frozen=True)
 class SeedResult:
-    """Per-entity insert/update counts from a :func:`seed_context` run."""
+    """Per-entity insert/update/skip counts from a :func:`seed_context` run.
+
+    ``*_skipped`` counts rows the seed deliberately left alone because they
+    already exist (tasks) or were modified at runtime (facts).
+    """
 
     projects_inserted: int = 0
     projects_updated: int = 0
     tasks_inserted: int = 0
-    tasks_updated: int = 0
+    tasks_skipped: int = 0
     facts_inserted: int = 0
     facts_updated: int = 0
+    facts_skipped: int = 0
 
 
 def _enable_sqlite_fks(dbapi_connection: object, connection_record: object) -> None:
@@ -144,75 +151,137 @@ def load_seed(path: Path | None = None, env_yaml: str | None = None) -> dict:
 
 
 def seed_context(session: Session, seed: dict) -> SeedResult:
-    """Upsert projects, their next-action tasks, and facts from ``seed``.
+    """Bootstrap projects, next-action tasks, and facts from ``seed``.
 
-    Read-then-write per row, keyed on stable identities:
-      * projects   -> matched by ``name``
-      * next action-> the project's is_next task, matched by (project_id, is_next)
-      * facts      -> matched by ``key``
+    INSERT-ONLY for live state. Keyed on stable identities:
+      * projects -> matched by ``name``. Insert with seeded values; on existing
+        rows only priority and description (seed-managed metadata) may change.
+        ``status`` and the goal layer (goal, current_bottleneck,
+        goal_updated_at) are live state and are never touched.
+      * tasks    -> matched by (project, title). Insert if missing; an existing
+        task — whatever its status — is skipped entirely, so a completed task
+        can never be resurrected by a redeploy.
+      * facts    -> matched by ``key``. Insert if missing; update from the seed
+        only while the row is pristine (updated_at == created_at, i.e. never
+        modified at runtime). Seed updates leave updated_at alone so the row
+        stays seed-managed until something else touches it.
 
-    Idempotent: editing a row's wording in the seed file updates the existing row
-    rather than creating a duplicate. Rows removed from the file are NOT deleted
-    (no prune). Returns insert/update counts.
+    Rows removed from the file are NOT deleted (no prune). Returns
+    insert/update/skip counts.
     """
     counts = {
         "projects_inserted": 0,
         "projects_updated": 0,
         "tasks_inserted": 0,
-        "tasks_updated": 0,
+        "tasks_skipped": 0,
         "facts_inserted": 0,
         "facts_updated": 0,
+        "facts_skipped": 0,
     }
 
     for row in seed.get("projects", []):
         name = row["name"]
         project = session.scalar(select(Project).where(Project.name == name))
         if project is None:
-            project = Project(name=name)
+            project = Project(
+                name=name,
+                status=row.get("status", "active"),
+                priority=row.get("priority", 0),
+                description=_clean(row.get("description")),
+            )
             session.add(project)
             counts["projects_inserted"] += 1
         else:
-            counts["projects_updated"] += 1
-        project.status = row.get("status", "active")
-        project.priority = row.get("priority", 0)
-        project.description = _clean(row.get("description"))
+            priority = row.get("priority", 0)
+            description = _clean(row.get("description"))
+            if project.priority != priority or project.description != description:
+                project.priority = priority
+                project.description = description
+                counts["projects_updated"] += 1
         session.flush()  # ensure project.id for the next-action task
 
         next_action = _clean(row.get("next_action"))
         if next_action:
-            _upsert_next_action(session, project.id, next_action, counts)
+            _seed_next_action(session, project.id, next_action, counts)
 
     for row in seed.get("facts", []):
         key = row["key"]
+        category = row["category"]
+        content = _clean(row["content"]) or ""
+        is_core = 1 if row.get("is_core") else 0
+        confidence = row.get("confidence", 1.0)
+
         fact = session.scalar(select(WorkspaceFact).where(WorkspaceFact.key == key))
         if fact is None:
-            fact = WorkspaceFact(key=key)
-            session.add(fact)
+            session.add(
+                WorkspaceFact(
+                    key=key,
+                    category=category,
+                    content=content,
+                    is_core=is_core,
+                    confidence=confidence,
+                )
+            )
             counts["facts_inserted"] += 1
-        else:
+            continue
+        if fact.updated_at != fact.created_at:
+            # Modified at runtime since seeding: the live version wins.
+            counts["facts_skipped"] += 1
+            continue
+        if (
+            fact.category != category
+            or fact.content != content
+            or fact.is_core != is_core
+            or fact.confidence != confidence
+        ):
+            fact.category = category
+            fact.content = content
+            fact.is_core = is_core
+            fact.confidence = confidence
+            # updated_at deliberately untouched: the row remains seed-managed.
             counts["facts_updated"] += 1
-        fact.category = row["category"]
-        fact.content = _clean(row["content"]) or ""
-        fact.is_core = 1 if row.get("is_core") else 0
-        fact.confidence = row.get("confidence", 1.0)
 
     return SeedResult(**counts)
 
 
-def _upsert_next_action(
+def _seed_next_action(
     session: Session, project_id: int, title: str, counts: dict[str, int]
 ) -> None:
-    """Upsert the project's single is_next task (one next action per project)."""
-    task = session.scalar(
-        select(Task).where(Task.project_id == project_id, Task.is_next == 1)
+    """Insert the seeded next-action task if the project doesn't already have it.
+
+    Matched case-insensitively by (project, title) across ALL statuses — a done
+    or dropped task with this title means the seed has nothing to add. A new
+    task gets is_next=1 only when no live next action exists, preserving the
+    one-next-per-project convention.
+    """
+    existing = session.scalar(
+        select(Task).where(
+            Task.project_id == project_id,
+            func.lower(Task.title) == title.lower(),
+        )
     )
-    if task is None:
-        task = Task(project_id=project_id, is_next=1, status="open", title=title)
-        session.add(task)
-        counts["tasks_inserted"] += 1
-    else:
-        task.title = title
-        counts["tasks_updated"] += 1
+    if existing is not None:
+        counts["tasks_skipped"] += 1
+        return
+    has_live_next = (
+        session.scalar(
+            select(Task.id).where(
+                Task.project_id == project_id,
+                Task.is_next == 1,
+                Task.status.in_(("open", "in_progress")),
+            )
+        )
+        is not None
+    )
+    session.add(
+        Task(
+            project_id=project_id,
+            title=title,
+            status="open",
+            is_next=0 if has_live_next else 1,
+        )
+    )
+    counts["tasks_inserted"] += 1
 
 
 def _clean(value: object) -> str | None:

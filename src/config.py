@@ -50,6 +50,19 @@ def _optional(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
+def _optional_int(name: str) -> int | None:
+    """Parse an optional integer env var; None when unset."""
+    raw = _optional(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigError(
+            f"Environment variable {name} must be an integer, got {raw!r}"
+        ) from exc
+
+
 @dataclass(frozen=True)
 class Config:
     """Immutable, typed view of all Spotter configuration."""
@@ -84,6 +97,11 @@ class Config:
     # Anthropic tool definitions, loaded verbatim from tools_schema.json and
     # passed straight to the Messages API.
     tools: list[dict[str, Any]]
+
+    # True when TELEGRAM_DEV_BOT_TOKEN supplied the token: a local run is
+    # polling a separate dev bot and cannot 409 against the deployed poller.
+    # Defaulted so existing Config(...) constructions stay valid.
+    using_dev_bot: bool = False
 
     @property
     def prompts_path(self) -> Path:
@@ -127,9 +145,22 @@ def load_config() -> Config:
     if not db_path.is_absolute():
         db_path = ROOT_DIR / db_path
 
+    # Dev bot override: TELEGRAM_BOT_TOKEN is always required (parity with
+    # production), but a set TELEGRAM_DEV_BOT_TOKEN wins for this process so
+    # local runs poll a separate bot and never fight Railway over getUpdates.
+    # TELEGRAM_DEV_ALLOWED_USER_ID optionally overrides the allowlist with it.
+    prod_token = _require("TELEGRAM_BOT_TOKEN")
+    dev_token = _optional("TELEGRAM_DEV_BOT_TOKEN")
+    allowed_user_id = _require_int("TELEGRAM_ALLOWED_USER_ID")
+    if dev_token:
+        dev_user_id = _optional_int("TELEGRAM_DEV_ALLOWED_USER_ID")
+        if dev_user_id is not None:
+            allowed_user_id = dev_user_id
+
     return Config(
-        telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
-        telegram_allowed_user_id=_require_int("TELEGRAM_ALLOWED_USER_ID"),
+        telegram_bot_token=dev_token or prod_token,
+        telegram_allowed_user_id=allowed_user_id,
+        using_dev_bot=bool(dev_token),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),

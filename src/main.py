@@ -29,6 +29,14 @@ def main() -> None:
 
     config = load_config()
 
+    if config.using_dev_bot:
+        logger.warning(
+            "Using DEV bot (TELEGRAM_DEV_BOT_TOKEN set) — the production bot "
+            "is untouched by this process"
+        )
+    else:
+        logger.info("Using PRODUCTION bot")
+
     engine, project_count = initialize_database(config.db_path, config.seed_context_yaml)
     session_factory = make_session_factory(engine)
     logger.info("Database ready with %d seeded projects", project_count)

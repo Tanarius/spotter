@@ -9,6 +9,8 @@ from datetime import datetime
 import anthropic
 from telegram.ext import Application
 
+from .backup import is_due as backup_is_due
+from .backup import run_backup
 from .bot import run_bot
 from .brain import Brain
 from .brief import BriefService
@@ -80,8 +82,17 @@ def main() -> None:
             except Exception:
                 logger.exception("Morning-brief job failed")
 
+        async def _backup_job() -> None:
+            try:
+                await asyncio.to_thread(
+                    run_backup, config.db_path, config.backup_retain
+                )
+            except Exception:
+                logger.exception("Weekly backup failed")
+
         loop_holder.append(asyncio.get_running_loop())
         scheduler.schedule_daily_brief(_brief_job)
+        scheduler.schedule_weekly_backup(_backup_job)
         trigger_service.bind_bot(application.bot)
         registered, caught_up = trigger_service.register_pending()
         scheduler.start()
@@ -96,6 +107,12 @@ def main() -> None:
         if brief_service.is_due_catch_up():
             logger.info("Morning brief missed while down; catch-up delivering now")
             asyncio.get_running_loop().create_task(_brief_job())
+        # Backup catch-up: the weekly cron only fires while the process is up,
+        # and redeploys reset it — so a stale (or absent) newest backup gets
+        # one now, in the background.
+        if backup_is_due(config.db_path):
+            logger.info("Newest DB backup is stale or missing; backing up now")
+            asyncio.get_running_loop().create_task(_backup_job())
         logger.info(
             "Scheduler started; morning brief at %s %s",
             config.brief_time,

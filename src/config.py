@@ -102,6 +102,8 @@ class Config:
     # polling a separate dev bot and cannot 409 against the deployed poller.
     # Defaulted so existing Config(...) constructions stay valid.
     using_dev_bot: bool = False
+    # How many timestamped DB backups to retain (weekly job + manual runs).
+    backup_retain: int = 4
 
     @property
     def prompts_path(self) -> Path:
@@ -161,6 +163,7 @@ def load_config() -> Config:
         telegram_bot_token=dev_token or prod_token,
         telegram_allowed_user_id=allowed_user_id,
         using_dev_bot=bool(dev_token),
+        backup_retain=int(_get("BACKUP_RETAIN", "4")),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),

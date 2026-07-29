@@ -25,8 +25,13 @@ from .config import Config
 logger = logging.getLogger(__name__)
 
 _BRIEF_JOB_ID = "morning_brief"
+_BACKUP_JOB_ID = "weekly_backup"
 # If Spotter is down at BRIEF_TIME and comes back within this window, still fire.
 _MISFIRE_GRACE_SECONDS = 3600
+# Weekly backup slot: quiet hours, local time. Missed runs are handled by the
+# boot-time catch-up in src.backup.is_due, not by misfire grace.
+_BACKUP_DAY_OF_WEEK = "sun"
+_BACKUP_HOUR = 3
 
 
 class SpotterScheduler:
@@ -44,6 +49,21 @@ class SpotterScheduler:
             callback,
             CronTrigger(hour=hour, minute=minute, timezone=self._tz),
             id=_BRIEF_JOB_ID,
+            replace_existing=True,
+            misfire_grace_time=_MISFIRE_GRACE_SECONDS,
+        )
+
+    def schedule_weekly_backup(self, callback: Callable[[], Awaitable[None]]) -> Job:
+        """Register the DB backup coroutine weekly (Sunday 03:00, config tz)."""
+        return self._scheduler.add_job(
+            callback,
+            CronTrigger(
+                day_of_week=_BACKUP_DAY_OF_WEEK,
+                hour=_BACKUP_HOUR,
+                minute=0,
+                timezone=self._tz,
+            ),
+            id=_BACKUP_JOB_ID,
             replace_existing=True,
             misfire_grace_time=_MISFIRE_GRACE_SECONDS,
         )

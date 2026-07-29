@@ -15,6 +15,12 @@ from .base import ToolContext, ToolHandler
 from .blocker import log_blocker
 from .capture import capture_item
 from .draft import draft_message
+from .goal import (
+    decompose_goal,
+    set_bottleneck,
+    set_project_goal,
+    update_milestone,
+)
 from .intent import schedule_intent
 from .memory import query_memory
 from .next_action import surface_next_action
@@ -22,7 +28,7 @@ from .stall import name_the_stall
 from .reminder import schedule_reminder
 from .status import update_task_status
 
-# name -> handler. Nine tools registered; update_workspace_doc deferred.
+# name -> handler. Thirteen tools registered; update_workspace_doc deferred.
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "capture_item": capture_item,
     "query_memory": query_memory,
@@ -33,6 +39,10 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "draft_message": draft_message,
     "update_task_status": update_task_status,
     "schedule_reminder": schedule_reminder,
+    "set_project_goal": set_project_goal,
+    "decompose_goal": decompose_goal,
+    "update_milestone": update_milestone,
+    "set_bottleneck": set_bottleneck,
 }
 
 __all__ = ["TOOL_HANDLERS", "ToolContext", "ToolHandler"]

@@ -200,5 +200,93 @@
       },
       "required": ["when_local", "kind", "message"]
     }
+  },
+  {
+    "name": "set_project_goal",
+    "description": "Set or update a project's goal - the target state in plain language, e.g. 'Simmer is live with real users signing up and paying'. Use when the user states what a project is for, where it should end up, or what success looks like. Optionally record the current bottleneck at the same time. If the result says no milestones exist, offer to decompose the goal.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "Which project. Defaults to the highest-priority active project if omitted."
+        },
+        "goal": {
+          "type": "string",
+          "description": "The target state in plain language. Preserve the user's wording where possible."
+        },
+        "current_bottleneck": {
+          "type": "string",
+          "description": "Optional: the single thing most blocking progress right now, if the user stated it."
+        }
+      },
+      "required": ["goal"]
+    }
+  },
+  {
+    "name": "decompose_goal",
+    "description": "Break a project's goal into ordered milestones. TWO-STEP tool. Step 1: call with just project_name - the result is the project's goal, bottleneck, open tasks, recent activity, and existing milestones. Step 2: think about what actually stands between that current state and the goal (do NOT just restate the goal), then call again with the milestones array to write them. First milestone = the one to work toward right now. Writing replaces unfinished milestones; done ones are kept.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "Which project. Defaults to the highest-priority active project if omitted."
+        },
+        "milestones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string", "description": "Concrete, verifiable state - a step, not the whole goal." },
+              "description": { "type": "string", "description": "Optional detail: what done looks like, key sub-steps." }
+            },
+            "required": ["title"]
+          },
+          "description": "Ordered milestones to write, first = work toward now. OMIT on the first call - provide only after reading the context the first call returns."
+        }
+      }
+    }
+  },
+  {
+    "name": "update_milestone",
+    "description": "Update a milestone's status when one is completed, being started, or dropped. Pass the numeric id when known (tool results show 'milestone #N'), otherwise the title - case-insensitive partial match is fine. Marking one active demotes any other active milestone in that project (only one active at a time); completing or dropping the active one auto-activates the next pending milestone.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "description": "Exact milestone id, if known from recent context. Preferred over title."
+        },
+        "title": {
+          "type": "string",
+          "description": "Milestone title to match. Required when id is omitted."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "active", "done", "dropped"],
+          "description": "New status."
+        }
+      },
+      "required": ["status"]
+    }
+  },
+  {
+    "name": "set_bottleneck",
+    "description": "Record the single thing most blocking a project right now. Use when the user identifies what's actually in the way ('the whole thing is stuck on X'). Different from log_blocker: log_blocker records one specific stuck item; the bottleneck is project-level strategic state used by briefs and next-action reasoning.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "Which project. Defaults to the highest-priority active project if omitted."
+        },
+        "bottleneck": {
+          "type": "string",
+          "description": "The single most-blocking thing, in plain language."
+        }
+      },
+      "required": ["bottleneck"]
+    }
   }
 ]

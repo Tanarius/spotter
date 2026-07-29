@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -40,6 +40,11 @@ class ToolContext:
 
 # A tool handler: (context, parsed tool input) -> result text for Claude.
 ToolHandler = Callable[[ToolContext, dict[str, Any]], str]
+
+
+def utc_now_str() -> str:
+    """UTC now, formatted the way SQLite's CURRENT_TIMESTAMP stores it."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def resolve_project(session: Session, name: str | None) -> Project | None:

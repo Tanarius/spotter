@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..db.models import Project, Task
+from ..db.models import Milestone, Project, Task
 from .base import ToolContext
 
 _TASK_STATUSES = ("open", "in_progress", "done", "paused", "waiting", "dropped")
@@ -68,7 +68,27 @@ def _update_task(session: Session, raw_id: Any, name: str, status: str) -> str:
 
     project = session.get(Project, task.project_id) if task.project_id else None
     where = f" [{project.name}]" if project else ""
-    return f"Task #{task.id} '{task.title}'{where}: {old} -> {status}."
+    confirmation = f"Task #{task.id} '{task.title}'{where}: {old} -> {status}."
+
+    # Progress awareness: a completion on a project with an active milestone
+    # gets a follow-up instruction (line 2+; dashboards show only line 1).
+    if status == "done" and project is not None:
+        milestone = session.scalar(
+            select(Milestone)
+            .where(
+                Milestone.project_id == project.id, Milestone.status == "active"
+            )
+            .order_by(Milestone.order_index, Milestone.id)
+        )
+        if milestone is not None:
+            confirmation += (
+                f"\nActive milestone on {project.name}: '{milestone.title}' "
+                f"(#{milestone.id}). Evaluate whether this completion finishes "
+                "that milestone's work — if yes, mark it done with "
+                "update_milestone (the next pending activates automatically); "
+                "if not, briefly note what still remains toward it."
+            )
+    return confirmation
 
 
 def _resolve_task(

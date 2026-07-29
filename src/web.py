@@ -45,6 +45,7 @@ from .config import Config
 from .db.models import (
     CapturedItem,
     JobApplication,
+    Milestone,
     Project,
     ScheduledTrigger,
     StallEvent,
@@ -111,6 +112,13 @@ _HANDOFF_PROMPT = (
     "Prepare a Claude Code handoff for task #{task_id} ('{title}') on {project}. "
     "Use the prepare_handoff tool, then reply with ONLY the final ready-to-paste "
     "prompt text — no code fences, no commentary around it."
+)
+_COMPLETION_EVAL_PROMPT = (
+    "Task #{task_id} ('{title}') on {project} was just marked done from the "
+    "dashboard. Evaluate whether the active milestone's work is now complete — "
+    "if it is, mark the milestone done with update_milestone (the next pending "
+    "activates automatically); if not, say in one sentence what still remains "
+    "toward it."
 )
 
 
@@ -233,7 +241,40 @@ class Dashboard:
         if task_id is None:
             raise web.HTTPBadRequest(text="missing or non-numeric task id")
         result = await asyncio.to_thread(self._write_task_status, task_id, status)
-        raise _redirect_with_message(result)
+        # Line 1 is the human confirmation; later lines (the milestone-eval
+        # instruction added by the tool) are for the model, not the toast.
+        toast = result.splitlines()[0] if result else result
+        if status == "done" and "Active milestone" in result:
+            # Progress awareness: evaluate milestone impact in the background so
+            # the redirect stays instant. The turn is logged — it can write
+            # milestone state, and chat should know about it.
+            asyncio.get_running_loop().create_task(
+                self._evaluate_completion(task_id)
+            )
+            toast += " Evaluating milestone impact…"
+        raise _redirect_with_message(toast)
+
+    async def _evaluate_completion(self, task_id: int) -> None:
+        try:
+            await asyncio.to_thread(self._run_completion_eval, task_id)
+        except Exception:
+            logger.exception("Milestone evaluation for task #%d failed", task_id)
+
+    def _run_completion_eval(self, task_id: int) -> None:
+        with self._session_factory() as session:
+            task = session.get(Task, task_id)
+            project = (
+                session.get(Project, task.project_id)
+                if task is not None and task.project_id
+                else None
+            )
+        if task is None or project is None:
+            return
+        self._brain.respond(
+            _COMPLETION_EVAL_PROMPT.format(
+                task_id=task.id, title=task.title, project=project.name
+            )
+        )
 
     def _write_task_status(self, task_id: int, status: str) -> str:
         """Run the update_task_status tool exactly as the brain dispatches it."""
@@ -454,6 +495,14 @@ class Dashboard:
             projects = session.scalars(
                 select(Project).order_by(Project.priority.desc(), Project.id)
             ).all()
+            active_milestones = {
+                m.project_id: m.title
+                for m in session.scalars(
+                    select(Milestone)
+                    .where(Milestone.status == "active")
+                    .order_by(Milestone.order_index, Milestone.id)
+                )
+            }
             tasks = session.scalars(
                 select(Task)
                 .where(Task.status.in_(_LIVE_TASK_STATUSES))
@@ -494,6 +543,9 @@ class Dashboard:
                         "status": p.status,
                         "priority": p.priority,
                         "description": p.description,
+                        "goal": p.goal,
+                        "bottleneck": p.current_bottleneck,
+                        "active_milestone": active_milestones.get(p.id),
                     }
                     for p in projects
                 ],
@@ -711,6 +763,11 @@ input[type=password], input[type=text], input[type=date] {
 /* compact rows */
 .projhead { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; padding-bottom: 2px; }
 .pname { font-weight: 600; color: #e8eaed; }
+.pmeta {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-bottom: 3px;
+}
+.pmeta b { color: #6fce93; font-weight: 600; }
 .trow {
   display: flex; align-items: center; gap: 8px; padding: 4px 0;
   border-bottom: 1px solid #1c1f25;
@@ -1009,12 +1066,40 @@ def _render_work(projects: list[dict[str, Any]], tasks: list[dict[str, Any]]) ->
             f"<span class='badge {html.escape(p['status'])}'>{html.escape(p['status'])}</span>"
             f"<span class='muted small'>p{p['priority']} · {len(group)} open</span></div>"
         )
+        meta = _render_project_meta(p)
+        if meta:
+            parts.append(meta)
         parts.extend(_render_task_row(t) for t in group)
     unlinked = by_project.pop(None, [])
     if unlinked:
         parts.append("<div class='projhead'><span class='pname muted'>No project</span></div>")
         parts.extend(_render_task_row(t) for t in unlinked)
     return "".join(parts)
+
+
+def _render_project_meta(project: dict[str, Any]) -> str:
+    """Compact goal / active milestone / bottleneck line under a project header."""
+    bits = []
+    if project.get("active_milestone"):
+        bits.append(f"<b>&#9656; {html.escape(project['active_milestone'])}</b>")
+    if project.get("goal"):
+        bits.append(f"goal: {html.escape(project['goal'])}")
+    if project.get("bottleneck"):
+        bits.append(f"bottleneck: {html.escape(project['bottleneck'])}")
+    if not bits:
+        return ""
+    full = " · ".join(bits)
+    plain_bits = [
+        b
+        for b in (
+            project.get("active_milestone"),
+            project.get("goal"),
+            project.get("bottleneck"),
+        )
+        if b
+    ]
+    tooltip = html.escape(" · ".join(plain_bits), quote=True)
+    return f"<div class='pmeta muted small' title='{tooltip}'>{full}</div>"
 
 
 def _render_task_row(task: dict[str, Any]) -> str:

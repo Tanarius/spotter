@@ -27,7 +27,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from .clock import time_context
 from .config import Config, load_config
 from .db import initialize_database, make_session_factory
-from .db.models import Blocker, CapturedItem, DailyBrief, Project, Task, WorkspaceFact
+from .db.models import (
+    Blocker,
+    CapturedItem,
+    DailyBrief,
+    Milestone,
+    Project,
+    Task,
+    WorkspaceFact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +45,18 @@ _LIVE_TASK_STATUSES = ("open", "in_progress")
 
 # Brief-specific system prompt: Spotter's voice without the chat persona's
 # 1-3 sentence length rule (which would fight the brief's structured format).
+# Shared by the morning brief and (via triggers._generate_evening) the evening
+# check-in, so the goals block below reaches both.
 _BRIEF_SYSTEM_TEMPLATE = (
     "You are Spotter, a blunt, specific personal assistant. Write the user's {label} "
     "exactly as the user message instructs: honor the requested structure, order, "
     "and word limit, and use no motivational language. Be honest — never invent progress, "
     "tasks, or items that aren't in the data provided.\n\n"
-    "## Context about the user\n{facts}"
+    "## Context about the user\n{facts}\n\n"
+    "## Project goals and progress\n{goals}\n"
+    "Frame the {label} around progress toward these goals — what moved toward the "
+    "active milestone, what the bottleneck is blocking — not raw task counts. "
+    "If a project has no goal, don't invent one."
 )
 
 
@@ -269,17 +283,50 @@ def _top_priority(session: Session) -> str | None:
     return task.title if task is not None else project.name
 
 
+def _format_goal_context(session: Session) -> str:
+    """One line per active project: goal, active milestone, bottleneck."""
+    projects = session.scalars(
+        select(Project)
+        .where(Project.status == "active")
+        .order_by(Project.priority.desc(), Project.id)
+    ).all()
+    if not projects:
+        return "(no active projects)"
+    active_by_project = {
+        m.project_id: m.title
+        for m in session.scalars(
+            select(Milestone)
+            .where(Milestone.status == "active")
+            .order_by(Milestone.order_index, Milestone.id)
+        )
+    }
+    lines = []
+    for p in projects:
+        bits = [f"GOAL: {p.goal}" if p.goal else "GOAL: (not set)"]
+        milestone = active_by_project.get(p.id)
+        if milestone:
+            bits.append(f"ACTIVE MILESTONE: {milestone}")
+        if p.current_bottleneck:
+            bits.append(f"BOTTLENECK: {p.current_bottleneck}")
+        lines.append(f"- {p.name} — " + " | ".join(bits))
+    return "\n".join(lines)
+
+
 def build_brief_system(
     config: Config, session: Session, label: str = "morning brief"
 ) -> str:
-    """Brief-family system prompt hydrated with the core workspace facts."""
+    """Brief-family system prompt hydrated with core facts and goal context."""
     facts = session.scalars(
         select(WorkspaceFact)
         .where(WorkspaceFact.is_core == 1)
         .order_by(WorkspaceFact.category, WorkspaceFact.id)
     ).all()
     facts_text = "\n".join(f"- ({f.category}) {f.content}" for f in facts) or "(none)"
-    hydrated = _BRIEF_SYSTEM_TEMPLATE.replace("{label}", label).replace("{facts}", facts_text)
+    hydrated = (
+        _BRIEF_SYSTEM_TEMPLATE.replace("{label}", label)
+        .replace("{facts}", facts_text)
+        .replace("{goals}", _format_goal_context(session))
+    )
     # Same per-call time block as the chat brain: the brief is the most
     # time-sensitive thing Spotter writes. {today} in the user prompt stays.
     return f"{hydrated}\n\n{time_context(config.timezone)}"

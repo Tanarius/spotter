@@ -7,3 +7,6 @@ __pycache__/
 # Holds personal context; copy seed/context.example.yaml to seed/context.yaml
 # and fill it in. The example (sanitized) is tracked; the real file is not.
 seed/context.yaml
+
+# Local DB inspection helper, not part of the app.
+check_db.py

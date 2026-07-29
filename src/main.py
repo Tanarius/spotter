@@ -119,7 +119,17 @@ def main() -> None:
             config.timezone,
         )
         if dashboard is not None:
-            await dashboard.start()
+            # The dashboard is optional infrastructure: a bind failure (port
+            # already taken by a stale process, etc.) must not take down the
+            # bot and scheduler with it.
+            try:
+                await dashboard.start()
+            except OSError:
+                logger.exception(
+                    "Dashboard failed to bind port %d; continuing WITHOUT the "
+                    "web dashboard (is a stale process holding the port?)",
+                    config.web_port,
+                )
 
     async def _post_shutdown(application: Application) -> None:
         if dashboard is not None:

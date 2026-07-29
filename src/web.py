@@ -107,6 +107,11 @@ _STALL_CHECK_PROMPT = (
     "stall bluntly (log it with name_the_stall if it's new); if not, say so in "
     "one or two sentences."
 )
+_HANDOFF_PROMPT = (
+    "Prepare a Claude Code handoff for task #{task_id} ('{title}') on {project}. "
+    "Use the prepare_handoff tool, then reply with ONLY the final ready-to-paste "
+    "prompt text — no code fences, no commentary around it."
+)
 
 
 class Dashboard:
@@ -153,6 +158,7 @@ class Dashboard:
         app.router.add_post("/api/next-action", self._api_next_action)
         app.router.add_post("/api/shrink", self._api_shrink)
         app.router.add_post("/api/stall-check", self._api_stall_check)
+        app.router.add_post("/api/handoff", self._api_handoff)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._config.web_port)
@@ -358,6 +364,27 @@ class Dashboard:
         result = await asyncio.to_thread(self._run_stall_check)
         return web.json_response(result)
 
+    async def _api_handoff(self, request: web.Request) -> web.Response:
+        result = await asyncio.to_thread(self._generate_handoff)
+        return web.json_response(result)
+
+    def _generate_handoff(self) -> dict[str, Any]:
+        """A Claude Code handoff prompt for the hero task (unlogged brain turn)."""
+        hero = self._hero_snapshot()
+        if hero is None:
+            return {"ok": False, "text": "No active project with a live task."}
+        prompt = _HANDOFF_PROMPT.format(
+            task_id=hero["task_id"], title=hero["title"], project=hero["project"]
+        )
+        try:
+            text = self._brain.respond(prompt, log=False)
+        except Exception:
+            logger.exception("Handoff generation from dashboard failed")
+            return {"ok": False, "text": ""}
+        if not text or text == _BRAIN_FALLBACK:
+            return {"ok": False, "text": text}
+        return {"ok": True, "text": _strip_code_fences(text)}
+
     def _hero_snapshot(self) -> dict[str, Any] | None:
         """The hero target: the agent's own pick for the top active project."""
         with self._session_factory() as session:
@@ -554,6 +581,18 @@ async def _json_body(request: web.Request) -> dict[str, Any]:
         return {}
 
 
+def _strip_code_fences(text: str) -> str:
+    """Unwrap a ```-fenced block if the model wrapped its reply in one."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    lines = lines[1:]  # opening fence (possibly with a language tag)
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def _pick_hero(session: Session) -> dict[str, Any] | None:
     """The focus-zone target, chosen exactly as surface_next_action would.
 
@@ -647,6 +686,17 @@ input[type=password], input[type=text], input[type=date] {
   margin-top: 10px; padding: 8px 11px; background: #1c1f25;
   border: 1px solid #33290f; border-left: 3px solid #d3b45e;
   border-radius: 8px; font-size: 13px; white-space: pre-wrap;
+}
+.handoff { margin-top: 10px; }
+.handoff-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 4px;
+}
+.handoff pre {
+  background: #101216; border: 1px solid #2a2e36; border-radius: 8px;
+  padding: 10px 12px; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; max-height: 320px;
+  overflow-y: auto; user-select: all;
 }
 /* status strip */
 .strip {
@@ -769,6 +819,37 @@ if (hero) {
   document.getElementById('btn-regen').addEventListener('click', function () {
     agent('/api/next-action', {force: true});
   });
+  const handoffBtn = document.getElementById('btn-handoff');
+  const handoffWrap = document.getElementById('handoff-wrap');
+  const handoffText = document.getElementById('handoff-text');
+  const copyBtn = document.getElementById('btn-copy');
+  handoffBtn.addEventListener('click', async function () {
+    handoffBtn.disabled = true;
+    handoffWrap.hidden = false;
+    handoffText.textContent = 'Thinking\\u2026';
+    try {
+      const r = await fetch('/api/handoff', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}',
+      });
+      const data = await r.json();
+      handoffText.textContent =
+        data.ok ? data.text : 'Handoff failed \\u2014 try again.';
+    } catch (err) {
+      handoffText.textContent = 'Handoff failed \\u2014 try again.';
+    }
+    handoffBtn.disabled = false;
+  });
+  copyBtn.addEventListener('click', async function () {
+    try {
+      await navigator.clipboard.writeText(handoffText.textContent);
+      copyBtn.textContent = 'Copied';
+      setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+    } catch (err) {
+      copyBtn.textContent = 'Select + copy manually';
+    }
+  });
   const stallBtn = document.getElementById('btn-stall');
   const stallBox = document.getElementById('stall-result');
   stallBtn.addEventListener('click', async function () {
@@ -867,9 +948,14 @@ def _render_hero(hero: dict[str, Any] | None) -> str:
         "<button class='done'>&#10003; Done</button></form>"
         "<button type='button' id='btn-shrink'>Too big &mdash; shrink it</button>"
         "<button type='button' id='btn-regen' title='Regenerate the next action'>&#8635;</button>"
+        "<button type='button' id='btn-handoff' title='Ready-to-paste prompt for Claude Code'>Get the prompt</button>"
         "<button type='button' id='btn-stall'>Am I stalling?</button>"
         "</div>"
         "<div id='stall-result' class='stall-result' hidden></div>"
+        "<div id='handoff-wrap' class='handoff' hidden>"
+        "<div class='handoff-head'><span class='muted small'>Paste into Claude Code:</span>"
+        "<button type='button' class='mini' id='btn-copy'>Copy</button></div>"
+        "<pre id='handoff-text'></pre></div>"
         "</div>"
     )
 

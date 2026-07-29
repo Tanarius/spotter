@@ -21,6 +21,7 @@ from .goal import (
     set_project_goal,
     update_milestone,
 )
+from .handoff import prepare_handoff
 from .intent import schedule_intent
 from .memory import query_memory
 from .next_action import surface_next_action
@@ -28,7 +29,7 @@ from .stall import name_the_stall
 from .reminder import schedule_reminder
 from .status import update_task_status
 
-# name -> handler. Thirteen tools registered; update_workspace_doc deferred.
+# name -> handler. Fourteen tools registered; update_workspace_doc deferred.
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "capture_item": capture_item,
     "query_memory": query_memory,
@@ -43,6 +44,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "decompose_goal": decompose_goal,
     "update_milestone": update_milestone,
     "set_bottleneck": set_bottleneck,
+    "prepare_handoff": prepare_handoff,
 }
 
 __all__ = ["TOOL_HANDLERS", "ToolContext", "ToolHandler"]

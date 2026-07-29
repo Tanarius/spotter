@@ -288,5 +288,31 @@
       },
       "required": ["bottleneck"]
     }
+  },
+  {
+    "name": "prepare_handoff",
+    "description": "Generate a ready-to-paste prompt that hands ONE task or milestone to Claude Code for execution. Spotter holds strategy; Claude Code executes. Call the tool to get the assembled context (objective, goal, bottleneck, related work, blockers, workspace facts), then compose the prompt it describes - Objective / Context / Constraints / Definition of done - and output it inside ONE fenced code block. Use when the user asks for a handoff, a prompt for Claude Code, or 'give me the prompt to go build this'. With no target specified, defaults to the project's active milestone (else its next task).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "target_type": {
+          "type": "string",
+          "enum": ["task", "milestone"],
+          "description": "What kind of thing is being handed off. Required when passing an id; optional with a title."
+        },
+        "id": {
+          "type": "integer",
+          "description": "Exact task or milestone id, if known from recent context."
+        },
+        "title": {
+          "type": "string",
+          "description": "Task or milestone title to match when no id is known. Case-insensitive partial match."
+        },
+        "project_name": {
+          "type": "string",
+          "description": "Project to default from when no target is given. Defaults to the highest-priority active project."
+        }
+      }
+    }
   }
 ]

@@ -180,5 +180,4 @@ commands:
   blocker: "The user is logging a blocker. Use log_blocker, capture what's stuck and why, and acknowledge briefly."
   next: "The user wants the next concrete action. Use surface_next_action on the highest-priority active project unless they name one."
   stall: "Run a stall check on the named project (or the highest-priority active project). Use the stall_detection prompt and be blunt."
-  doc: "The user wants to write to the workspace doc. Use update_workspace_doc with the appropriate section."
   reload: "Reload prompts.yaml from disk and confirm the reload in one line. (No model call needed.)"

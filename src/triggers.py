@@ -27,7 +27,12 @@ import telegram
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from .brief import assemble_inputs, build_brief_system, render_evening_prompt
+from .brief import (
+    assemble_inputs,
+    build_brief_system,
+    render_evening_prompt,
+    to_plain_text,
+)
 from .clock import time_context
 from .config import Config
 from .db.models import Project, ScheduledTrigger
@@ -52,7 +57,8 @@ _GENERATION_SYSTEM = (
     "You are Spotter, a blunt, specific personal assistant messaging the user on "
     "Telegram at a scheduled time. Write the single short message the instruction "
     "asks for — 1-3 sentences, no greeting fluff, no motivational language, plain "
-    "text (no markdown headers). Output only the message itself."
+    "text only (Telegram renders markdown literally: no **bold**, no headers, no "
+    "backticks). Output only the message itself."
 )
 
 
@@ -281,7 +287,7 @@ class TriggerService:
             messages=[{"role": "user", "content": user_prompt}],
         )
         parts = [block.text for block in response.content if block.type == "text"]
-        return "\n".join(parts).strip()
+        return to_plain_text("\n".join(parts).strip())
 
     def _finalize(self, trigger_id: int, recurrence: str | None) -> datetime | None:
         """Mark a one-shot fired, or advance a recurring fire_at. Returns next due."""
@@ -312,4 +318,4 @@ class TriggerService:
             messages=[{"role": "user", "content": user}],
         )
         parts = [block.text for block in response.content if block.type == "text"]
-        return "\n".join(parts).strip() or prompt
+        return to_plain_text("\n".join(parts).strip()) or prompt

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -41,7 +42,9 @@ logger = logging.getLogger(__name__)
 
 _BRIEF_MAX_TOKENS = 1024
 _CAPTURED_LOOKBACK_HOURS = 24
-_LIVE_TASK_STATUSES = ("open", "in_progress")
+# Statuses the brief surfaces. waiting is included (labeled, with age) so
+# "still waiting on X" never silently vanishes; paused stays excluded.
+_BRIEF_TASK_STATUSES = ("open", "in_progress", "waiting")
 
 # Brief-specific system prompt: Spotter's voice without the chat persona's
 # 1-3 sentence length rule (which would fight the brief's structured format).
@@ -51,7 +54,9 @@ _BRIEF_SYSTEM_TEMPLATE = (
     "You are Spotter, a blunt, specific personal assistant. Write the user's {label} "
     "exactly as the user message instructs: honor the requested structure, order, "
     "and word limit, and use no motivational language. Be honest — never invent progress, "
-    "tasks, or items that aren't in the data provided.\n\n"
+    "tasks, or items that aren't in the data provided. Write PLAIN TEXT for "
+    "Telegram: it renders markdown literally, so never use **bold**, __underline__, "
+    "# headers, or backticks — use plain numbering and dashes instead.\n\n"
     "## Context about the user\n{facts}\n\n"
     "## Project goals and progress\n{goals}\n"
     "Frame the {label} around progress toward these goals — what moved toward the "
@@ -165,7 +170,8 @@ class BriefService:
             messages=[{"role": "user", "content": user_prompt}],
         )
         parts = [block.text for block in response.content if block.type == "text"]
-        return "\n".join(parts).strip()
+        # Sanitized at compose time so the sent and persisted copies match.
+        return to_plain_text("\n".join(parts).strip())
 
 
 # ---------------------------------------------------------------------------
@@ -203,19 +209,38 @@ def assemble_inputs(session: Session, config: Config) -> BriefInputs:
 
 def _format_active_tasks(session: Session) -> str:
     rows = session.execute(
-        select(Task.id, Task.title, Task.status, Task.is_next, Project.name)
+        select(
+            Task.id, Task.title, Task.status, Task.is_next, Task.updated_at, Project.name
+        )
         .outerjoin(Project, Task.project_id == Project.id)
-        .where(Task.status.in_(_LIVE_TASK_STATUSES))
+        .where(Task.status.in_(_BRIEF_TASK_STATUSES))
         .order_by(Project.priority.desc().nulls_last(), Task.is_next.desc(), Task.id)
     ).all()
     if not rows:
         return "(none)"
     lines = []
-    for task_id, title, status, is_next, project_name in rows:
+    for task_id, title, status, is_next, updated_at, project_name in rows:
         tag = f"[{project_name}] " if project_name else ""
         flag = " (next)" if is_next else ""
-        lines.append(f"- {tag}{title} — {status}{flag} (task #{task_id})")
+        status_text = status
+        if status == "waiting":
+            days = _days_since(updated_at)
+            status_text = f"WAITING ({days}d)" if days else "WAITING"
+        lines.append(f"- {tag}{title} — {status_text}{flag} (task #{task_id})")
     return "\n".join(lines)
+
+
+def _days_since(stamp: str | None) -> int:
+    """Whole days since a DB UTC timestamp; 0 when absent or unparsable."""
+    if not stamp:
+        return 0
+    try:
+        then = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return 0
+    return max(0, (datetime.now(timezone.utc) - then).days)
 
 
 def _format_open_blockers(session: Session) -> str:
@@ -361,6 +386,24 @@ def _utc_now_str(moment: datetime | None = None) -> str:
     """Format a UTC datetime the way SQLite's CURRENT_TIMESTAMP does."""
     moment = moment or datetime.now(timezone.utc)
     return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Telegram sends are plain text (no parse_mode), so markdown the model emits
+# shows literally. The system prompts forbid it; this guarantees it anyway.
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_MD_UNDERLINE = re.compile(r"__(.+?)__", re.DOTALL)
+_MD_HEADER = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+
+
+def to_plain_text(text: str) -> str:
+    """Strip the markdown Telegram would render literally (**bold** etc.).
+
+    Deliberately conservative: single ``*``/``_`` are left alone (bullets,
+    real underscores), only paired markers and leading headers are removed.
+    """
+    text = _MD_BOLD.sub(r"\1", text)
+    text = _MD_UNDERLINE.sub(r"\1", text)
+    return _MD_HEADER.sub("", text)
 
 
 # ---------------------------------------------------------------------------

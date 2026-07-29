@@ -33,6 +33,11 @@ class Project(Base):
     status: Mapped[str] = mapped_column(server_default=text("'active'"))  # active | paused | done
     priority: Mapped[int] = mapped_column(server_default=text("0"))  # higher = more important
     description: Mapped[str | None]
+    # Goal layer (added post-schema.sql; apply_migrations ALTERs these onto
+    # existing databases). All nullable — goals start empty, nothing backfilled.
+    goal: Mapped[str | None]  # target state in plain language
+    current_bottleneck: Mapped[str | None]  # the single most-blocking thing right now
+    goal_updated_at: Mapped[str | None]
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
     updated_at: Mapped[str] = mapped_column(server_default=_NOW)
 
@@ -220,6 +225,31 @@ class StallEvent(Base):
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
 
 
+class Milestone(Base):
+    """A step between a project's current state and its goal.
+
+    Ordered by ``order_index``; at most one should be ``active`` per project at
+    a time (the one being worked toward). Added after schema.sql was finalized,
+    so like job_applications it exists only here and ``create_all`` creates it
+    on existing databases.
+    """
+
+    __tablename__ = "milestones"
+    __table_args__ = (
+        Index("idx_milestones_project", "project_id", "status", "order_index"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    title: Mapped[str]
+    description: Mapped[str | None]
+    status: Mapped[str] = mapped_column(server_default=text("'pending'"))  # pending | active | done | dropped
+    order_index: Mapped[int] = mapped_column(server_default=text("0"))
+    created_at: Mapped[str] = mapped_column(server_default=_NOW)
+    completed_at: Mapped[str | None]
+
+
 class JobApplication(Base):
     """Job-search pipeline entry, managed from the web dashboard.
 
@@ -318,5 +348,6 @@ __all__ = [
     "DailyBrief",
     "StallEvent",
     "JobApplication",
+    "Milestone",
     "FTS_STATEMENTS",
 ]

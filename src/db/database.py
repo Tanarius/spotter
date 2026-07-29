@@ -111,6 +111,16 @@ def apply_migrations(engine: Engine) -> None:
                 "ALTER TABLE scheduled_triggers ADD COLUMN source TEXT NOT NULL DEFAULT 'chat'"
             )
             logger.info("Migration: added scheduled_triggers.source")
+        # Goal layer: databases created before projects gained goal columns.
+        # All nullable, so plain ADD COLUMN with no default is safe and nothing
+        # is backfilled — goals start empty.
+        project_columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(projects)")
+        }
+        for column in ("goal", "current_bottleneck", "goal_updated_at"):
+            if column not in project_columns:
+                conn.exec_driver_sql(f"ALTER TABLE projects ADD COLUMN {column} TEXT")
+                logger.info("Migration: added projects.%s", column)
 
 
 def load_seed(path: Path | None = None, env_yaml: str | None = None) -> dict:

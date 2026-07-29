@@ -51,7 +51,7 @@ from .db.models import (
     StallEvent,
     Task,
 )
-from .tools.base import ToolContext, resolve_project
+from .tools.base import ToolContext
 from .tools.capture import capture_item
 # _next_task is the tool's own candidate pick (is_next else oldest open); the
 # hero uses it directly so the page and the agent can never pick differently.
@@ -91,6 +91,9 @@ _RECENT_CAPTURES = 8
 _NEXT_ACTION_TTL_SECONDS = 600
 # A task untouched this long gets a staleness marker in the work list.
 _STALE_AFTER_DAYS = 3
+# With this many items or fewer in the right column (applications + triggers),
+# the page renders single-column and the work list takes the full width.
+_SPARSE_RIGHT_ITEMS = 3
 
 _NEXT_ACTION_PROMPT = (
     "Surface the next concrete action on {project} (use the surface_next_action "
@@ -646,25 +649,31 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _pick_hero(session: Session) -> dict[str, Any] | None:
-    """The focus-zone target, chosen exactly as surface_next_action would.
+    """The focus-zone target: the best live task down the priority ladder.
 
-    ``resolve_project(None)`` is the tool's default-project rule (highest
-    priority active) and ``_next_task`` its candidate rule (is_next else oldest
-    open), so the page can never spotlight something the agent wouldn't.
+    Walks ACTIVE projects in priority order and returns the first one that has
+    a candidate task — per-project candidacy is still the tool's own
+    ``_next_task`` rule (is_next else oldest open), so the page can never
+    spotlight a task the agent wouldn't. Empty state only when no active
+    project has any live task.
     """
-    project = resolve_project(session, None)
-    if project is None:
-        return None
-    task = _next_task(session, project.id)
-    if task is None:
-        return None
-    return {
-        "project_id": project.id,
-        "project": project.name,
-        "task_id": task.id,
-        "title": task.title,
-        "updated_at": task.updated_at,
-    }
+    projects = session.scalars(
+        select(Project)
+        .where(Project.status == "active")
+        .order_by(Project.priority.desc(), Project.id)
+    ).all()
+    for project in projects:
+        task = _next_task(session, project.id)
+        if task is None:
+            continue
+        return {
+            "project_id": project.id,
+            "project": project.name,
+            "task_id": task.id,
+            "title": task.title,
+            "updated_at": task.updated_at,
+        }
+    return None
 
 
 def _age_days(updated_at: str) -> int:
@@ -688,18 +697,18 @@ _STYLE = """
 * { box-sizing: border-box; margin: 0; }
 body {
   background: #101216; color: #d5d9df;
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-  max-width: 1100px; margin: 0 auto; padding: 12px 14px 48px;
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  max-width: 1100px; margin: 0 auto; padding: 10px 14px 40px;
 }
 h1 { font-size: 16px; color: #f0f2f5; }
 h2 {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: #7d8590; margin: 20px 0 4px;
+  color: #7d8590; margin: 14px 0 3px;
 }
 .muted { color: #7d8590; }
 .small { font-size: 12px; }
 b { color: #e8eaed; font-weight: 600; }
-.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .topbar form { margin: 0; }
 button, input[type=submit] {
   background: #262a31; color: #d5d9df; border: 1px solid #343a43;
@@ -718,17 +727,17 @@ input[type=password], input[type=text], input[type=date] {
 /* focus zone */
 .hero {
   background: #14211a; border: 1px solid #275c38; border-left: 4px solid #3ddc84;
-  border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+  border-radius: 10px; padding: 11px 14px; margin-bottom: 8px;
 }
 .hero-label {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
   color: #55e08c; margin-bottom: 4px;
 }
-.hero-task { font-size: 21px; font-weight: 700; color: #f2f4f6; line-height: 1.25; }
+.hero-task { font-size: 19px; font-weight: 700; color: #f2f4f6; line-height: 1.25; }
 .hero.busy .hero-task { opacity: 0.55; }
 .hero-parent { color: #7d8590; text-transform: none; letter-spacing: 0; }
 .hero-note { color: #d3b45e; font-size: 12px; margin-top: 4px; min-height: 0; }
-.hero-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+.hero-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 9px; align-items: center; }
 .hero-actions form { margin: 0; }
 .hero button.done {
   background: #1d4a2c; color: #66ffa6; border: 1px solid #2f7a48;
@@ -752,16 +761,18 @@ input[type=password], input[type=text], input[type=date] {
 }
 /* status strip */
 .strip {
-  display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 8px 2px;
+  display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 6px 2px;
   font-size: 13px; color: #7d8590; border-bottom: 1px solid #23262d;
 }
-/* two-column layout */
-.grid { display: grid; grid-template-columns: 1fr; gap: 0 32px; }
+/* two-column layout; .single (sparse right column) stays one column and lets
+   the work list use the full width */
+.grid { display: grid; grid-template-columns: 1fr; gap: 0 24px; }
 @media (min-width: 900px) { .grid { grid-template-columns: 1.15fr 0.85fr; } }
+.grid.single { grid-template-columns: 1fr; }
 /* let columns shrink below content width so ellipsized rows can't overflow */
 .grid > div { min-width: 0; }
 /* compact rows */
-.projhead { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; padding-bottom: 2px; }
+.projhead { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; padding-bottom: 1px; }
 .pname { font-weight: 600; color: #e8eaed; }
 .pmeta {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -769,7 +780,7 @@ input[type=password], input[type=text], input[type=date] {
 }
 .pmeta b { color: #6fce93; font-weight: 600; }
 .trow {
-  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  display: flex; align-items: center; gap: 8px; padding: 3px 0;
   border-bottom: 1px solid #1c1f25;
 }
 .trow form { margin: 0; display: flex; }
@@ -804,7 +815,7 @@ input[type=password], input[type=text], input[type=date] {
   border-radius: 8px; padding: 7px 11px; margin-bottom: 10px; font-size: 13px;
 }
 /* collapsibles */
-details { margin: 6px 0; }
+details { margin: 4px 0; }
 summary {
   cursor: pointer; color: #7d8590; font-size: 13px; list-style: none;
   -webkit-user-select: none; user-select: none;
@@ -964,6 +975,12 @@ def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") 
         _render_triggers(state["triggers"]),
         _render_captures(state["captures"]),
     ]
+    # Sparse right column -> single column; the work list gets the full width.
+    grid_class = (
+        "grid single"
+        if len(state["apps"]) + len(state["triggers"]) <= _SPARSE_RIGHT_ITEMS
+        else "grid"
+    )
     sections = [
         "<div class='topbar'><h1>Spotter</h1>"
         "<form method='post' action='/logout'><button class='mini'>Log out</button></form></div>",
@@ -971,7 +988,7 @@ def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") 
         _render_hero(state["hero"]),
         _render_strip(state),
         _render_quick_add(state["projects"]),
-        f"<div class='grid'><div>{''.join(left)}</div><div>{''.join(right)}</div></div>",
+        f"<div class='{grid_class}'><div>{''.join(left)}</div><div>{''.join(right)}</div></div>",
     ]
     return _page("Spotter", "".join(sections), script=_HERO_SCRIPT)
 

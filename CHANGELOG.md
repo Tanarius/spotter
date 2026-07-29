@@ -6,6 +6,31 @@ after its step's acceptance test passed.
 
 ---
 
+## 2026-07-29 — Dashboard fixes
+
+### Focus-zone priority ladder + adaptive layout
+
+**What:** Two dashboard bugs.
+- `_pick_hero` only examined the single highest-priority active project, so
+  the focus zone showed the empty state whenever that project had no live
+  task even though lower-priority active projects did. It now walks active
+  projects in priority order and spotlights the first with a candidate task
+  (per-project candidacy unchanged: the tool's own is_next-else-oldest-open
+  rule). The empty state appears only when no active project has any live
+  task. Paused/done projects are never considered.
+- The fixed two-column split left a mostly empty right half when job
+  applications and triggers were sparse. The column split is now decided
+  server-side: with 3 or fewer right-column items (applications + triggers),
+  the page renders single-column and the work list takes the full width.
+  General density pass: tighter heading margins, hero padding, row padding,
+  and section gaps.
+
+**Verify:** with the top project's tasks all done/waiting, the hero shows the
+next project's task; with ≤3 applications+triggers the page is single-column
+at desktop width.
+
+---
+
 ## 2026-07-29 — Correctness & operations batch
 
 ### `d53679d` — Surface waiting tasks in briefs; plain-text Telegram output; drop dead doc command

@@ -314,5 +314,19 @@
         }
       }
     }
+  },
+  {
+    "name": "list_job_applications",
+    "description": "List the user's tracked job applications - company, role, status, date applied, source, notes - with a pipeline summary. Use whenever the user asks about their job search, applications, pipeline, or a specific company they applied to. Applications are added and updated on the web dashboard; this tool is read-only.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["applied", "responded", "screen", "interview", "offer", "rejected", "ghosted"],
+          "description": "Optional: only applications in this status. Omit for all."
+        }
+      }
+    }
   }
 ]

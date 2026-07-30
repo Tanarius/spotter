@@ -104,6 +104,19 @@ class Config:
     using_dev_bot: bool = False
     # How many timestamped DB backups to retain (weekly job + manual runs).
     backup_retain: int = 4
+    # RAILWAY_ENVIRONMENT when running on Railway, else "". Drives the
+    # environment badge on the dashboard and the absolute-DB_PATH boot guard.
+    railway_env: str = ""
+
+    @property
+    def environment_label(self) -> str:
+        """Human label for where this process runs: RAILWAY or LOCAL."""
+        return "RAILWAY" if self.railway_env else "LOCAL"
+
+    @property
+    def bot_id(self) -> str:
+        """The numeric bot id (public half of the token) for identity display."""
+        return self.telegram_bot_token.split(":", 1)[0]
 
     @property
     def prompts_path(self) -> Path:
@@ -144,6 +157,17 @@ def load_config() -> Config:
 
     db_path_raw = _get("DB_PATH", "data/spotter.db")
     db_path = Path(db_path_raw)
+    railway_env = _optional("RAILWAY_ENVIRONMENT")
+    if railway_env and not db_path.is_absolute():
+        # A relative DB_PATH on Railway resolves inside the container's
+        # ephemeral filesystem: the database (and its backups) are silently
+        # destroyed on every deploy. Refuse loudly instead of losing data.
+        raise ConfigError(
+            f"DB_PATH must be ABSOLUTE on Railway (got {db_path_raw!r}). "
+            "A relative path lives on ephemeral container storage and is wiped "
+            "on every deploy. Mount a volume at /data and set "
+            "DB_PATH=/data/spotter.db."
+        )
     if not db_path.is_absolute():
         db_path = ROOT_DIR / db_path
 
@@ -164,6 +188,7 @@ def load_config() -> Config:
         telegram_allowed_user_id=allowed_user_id,
         using_dev_bot=bool(dev_token),
         backup_retain=int(_get("BACKUP_RETAIN", "4")),
+        railway_env=railway_env,
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),

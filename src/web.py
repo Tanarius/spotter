@@ -36,7 +36,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from aiohttp import web
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .brain import _FALLBACK_REPLY as _BRAIN_FALLBACK
@@ -44,6 +44,7 @@ from .brain import Brain
 from .config import Config
 from .db.models import (
     CapturedItem,
+    ConversationLogEntry,
     JobApplication,
     Milestone,
     Project,
@@ -492,6 +493,15 @@ class Dashboard:
             return entry["step"]
         return None
 
+    def _identity(self) -> dict[str, Any]:
+        """Which world this page is: environment, bot, database. Anti-confusion."""
+        return {
+            "environment": self._config.environment_label,
+            "bot_kind": "DEV bot" if self._config.using_dev_bot else "PROD bot",
+            "bot_id": self._config.bot_id,
+            "db_path": str(self._config.db_path),
+        }
+
     def _load_state(self) -> dict[str, Any]:
         """Snapshot everything the page shows into plain dicts (no live ORM rows)."""
         with self._session_factory() as session:
@@ -536,8 +546,20 @@ class Dashboard:
                 # themselves; the page fetches /api/next-action when this is None.
                 hero["step"] = self._cached_step(hero)
             week_ago = (datetime.now(self._tz) - timedelta(days=7)).strftime("%Y-%m-%d")
+            counts = {
+                "tasks": session.scalar(select(func.count()).select_from(Task)) or 0,
+                "applications": len(apps),
+                "captures": session.scalar(
+                    select(func.count()).select_from(CapturedItem)
+                ) or 0,
+                "log_rows": session.scalar(
+                    select(func.count()).select_from(ConversationLogEntry)
+                ) or 0,
+            }
             return {
                 "hero": hero,
+                "identity": self._identity(),
+                "counts": counts,
                 "apps_recent_count": sum(1 for a in apps if a.date_applied >= week_ago),
                 "projects": [
                     {
@@ -808,6 +830,13 @@ input[type=password], input[type=text], input[type=date] {
 .badge.interview { background: #33290f; color: #d3b45e; }
 .badge.rejected, .badge.ghosted { background: #262a31; color: #9aa1ab; }
 .badge.stale { background: #3b2320; color: #e8896f; }
+.badge.envlocal { background: #33290f; color: #d3b45e; border: 1px solid #5c4a1a; }
+.badge.envprod { background: #173225; color: #6fce93; border: 1px solid #2c5b40; }
+.topbar .row { display: flex; align-items: center; gap: 10px; }
+.foot {
+  margin-top: 20px; padding-top: 8px; border-top: 1px solid #23262d;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pipeline { font-size: 13px; color: #7d8590; padding: 2px 0 4px; }
 .empty { color: #667080; font-style: italic; font-size: 13px; padding: 4px 0; }
 .toast {
@@ -981,16 +1010,42 @@ def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") 
         if len(state["apps"]) + len(state["triggers"]) <= _SPARSE_RIGHT_ITEMS
         else "grid"
     )
+    identity = state.get("identity")
+    badge = ""
+    if identity:
+        flavor = "envlocal" if identity["environment"] == "LOCAL" else "envprod"
+        badge = (
+            f"<span class='badge {flavor}' title='DB: {html.escape(identity['db_path'], quote=True)}'>"
+            f"{html.escape(identity['environment'])} · {html.escape(identity['bot_kind'])} "
+            f"{html.escape(identity['bot_id'])}</span>"
+        )
     sections = [
-        "<div class='topbar'><h1>Spotter</h1>"
+        f"<div class='topbar'><span class='row'><h1>Spotter</h1>{badge}</span>"
         "<form method='post' action='/logout'><button class='mini'>Log out</button></form></div>",
         toast,
         _render_hero(state["hero"]),
         _render_strip(state),
         _render_quick_add(state["projects"]),
         f"<div class='{grid_class}'><div>{''.join(left)}</div><div>{''.join(right)}</div></div>",
+        _render_footer(state),
     ]
     return _page("Spotter", "".join(sections), script=_HERO_SCRIPT)
+
+
+def _render_footer(state: dict[str, Any]) -> str:
+    """Identity + row counts: makes two environments instantly comparable."""
+    identity = state.get("identity")
+    counts = state.get("counts")
+    if not identity or not counts:
+        return ""
+    return (
+        "<div class='foot muted small'>"
+        f"{html.escape(identity['environment'])} · {html.escape(identity['bot_kind'])} "
+        f"{html.escape(identity['bot_id'])} · DB: {html.escape(identity['db_path'])} · "
+        f"{counts['tasks']} tasks · {counts['applications']} applications · "
+        f"{counts['captures']} captures · {counts['log_rows']} conversation rows"
+        "</div>"
+    )
 
 
 def _render_hero(hero: dict[str, Any] | None) -> str:

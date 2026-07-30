@@ -124,7 +124,7 @@ def apply_migrations(engine: Engine) -> None:
         project_columns = {
             row[1] for row in conn.exec_driver_sql("PRAGMA table_info(projects)")
         }
-        for column in ("goal", "current_bottleneck", "goal_updated_at"):
+        for column in ("goal", "current_bottleneck", "goal_updated_at", "github_repo"):
             if column not in project_columns:
                 conn.exec_driver_sql(f"ALTER TABLE projects ADD COLUMN {column} TEXT")
                 logger.info("Migration: added projects.%s", column)

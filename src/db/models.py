@@ -38,6 +38,10 @@ class Project(Base):
     goal: Mapped[str | None]  # target state in plain language
     current_bottleneck: Mapped[str | None]  # the single most-blocking thing right now
     goal_updated_at: Mapped[str | None]
+    # GitHub repo mapped to this project ("owner/name" or just "name"),
+    # matched case-insensitively by the webhook ingester. Nullable; the
+    # ingester also falls back to repo-name == project-name.
+    github_repo: Mapped[str | None]
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
     updated_at: Mapped[str] = mapped_column(server_default=_NOW)
 
@@ -225,6 +229,41 @@ class StallEvent(Base):
     created_at: Mapped[str] = mapped_column(server_default=_NOW)
 
 
+class Event(Base):
+    """The event log: what actually happened, with provenance and recency.
+
+    The memory-layer backbone (goal-layer phase 4): every piece of knowledge
+    carries WHERE it came from (``source``), WHEN it actually happened
+    (``occurred_at``, distinct from ``recorded_at``), and HOW MUCH to trust it
+    (``confidence`` — a commit is fact, a remembered sentence is a claim).
+    ``superseded_by`` lets newer information explicitly retire older. Added
+    post-schema.sql; ``create_all`` creates it on existing databases.
+    """
+
+    __tablename__ = "events"
+    __table_args__ = (
+        Index("idx_events_project_time", "project_id", text("occurred_at DESC")),
+        Index("idx_events_source_time", "source", text("occurred_at DESC")),
+        # Dedupe key for redelivered external events (webhook delivery ids).
+        Index("idx_events_external", "source", "external_id", unique=True),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str]  # github | claude_code | user_chat | user_dashboard | inferred
+    kind: Mapped[str]  # push | pull_request | session_note | ...
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"))
+    # Free-form entity when no project matched (e.g. the repo full name).
+    subject: Mapped[str | None]
+    summary: Mapped[str]  # one-line human/model-readable statement of the event
+    detail: Mapped[str | None]  # fuller extract (commit list, notes)
+    confidence: Mapped[float] = mapped_column(server_default=text("1.0"))
+    occurred_at: Mapped[str]  # UTC 'YYYY-MM-DD HH:MM:SS' — when it happened
+    recorded_at: Mapped[str] = mapped_column(server_default=_NOW)
+    external_id: Mapped[str | None]  # e.g. GitHub delivery id, for dedupe
+    superseded_by: Mapped[int | None] = mapped_column(ForeignKey("events.id"))
+
+
 class Milestone(Base):
     """A step between a project's current state and its goal.
 
@@ -349,5 +388,6 @@ __all__ = [
     "StallEvent",
     "JobApplication",
     "Milestone",
+    "Event",
     "FTS_STATEMENTS",
 ]

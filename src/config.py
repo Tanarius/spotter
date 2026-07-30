@@ -107,6 +107,9 @@ class Config:
     # RAILWAY_ENVIRONMENT when running on Railway, else "". Drives the
     # environment badge on the dashboard and the absolute-DB_PATH boot guard.
     railway_env: str = ""
+    # Shared secret for GitHub webhook signature verification. Unset means the
+    # /webhooks/github endpoint is not served at all (refuse rather than open).
+    github_webhook_secret: str = ""
 
     @property
     def environment_label(self) -> str:
@@ -189,6 +192,7 @@ def load_config() -> Config:
         using_dev_bot=bool(dev_token),
         backup_retain=int(_get("BACKUP_RETAIN", "4")),
         railway_env=railway_env,
+        github_webhook_secret=_optional("GITHUB_WEBHOOK_SECRET"),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),

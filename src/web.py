@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .brain import _FALLBACK_REPLY as _BRAIN_FALLBACK
 from .brain import Brain
 from .config import Config
+from .ingest import record_github_event
 from .db.models import (
     CapturedItem,
     ConversationLogEntry,
@@ -171,6 +172,11 @@ class Dashboard:
         app.router.add_post("/api/shrink", self._api_shrink)
         app.router.add_post("/api/stall-check", self._api_stall_check)
         app.router.add_post("/api/handoff", self._api_handoff)
+        # GitHub webhook ingestion (memory phase 4A). Only registered when a
+        # secret exists — no secret, no endpoint. Auth is GitHub's HMAC
+        # signature, not the session cookie (see _auth_middleware exemption).
+        if self._config.github_webhook_secret:
+            app.router.add_post("/webhooks/github", self._github_webhook)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._config.web_port)
@@ -195,7 +201,13 @@ class Dashboard:
 
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
-        if request.path == "/login" or self._is_authenticated(request):
+        # /webhooks/github authenticates via GitHub's HMAC signature inside
+        # its handler; GitHub cannot hold a session cookie.
+        if (
+            request.path == "/login"
+            or request.path == "/webhooks/github"
+            or self._is_authenticated(request)
+        ):
             return await handler(request)
         raise web.HTTPFound("/login")
 
@@ -263,6 +275,37 @@ class Dashboard:
             await asyncio.to_thread(self._run_completion_eval, task_id)
         except Exception:
             logger.exception("Milestone evaluation for task #%d failed", task_id)
+
+    # -- GitHub webhook (memory phase 4A) ---------------------------------------
+
+    async def _github_webhook(self, request: web.Request) -> web.Response:
+        """Verify GitHub's HMAC signature, then record the delivery as an event."""
+        body = await request.read()
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + hmac.new(
+            self._config.github_webhook_secret.encode(), body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            logger.warning("GitHub webhook rejected: bad or missing signature")
+            raise web.HTTPForbidden(text="bad signature")
+
+        event_type = request.headers.get("X-GitHub-Event", "")
+        delivery_id = request.headers.get("X-GitHub-Delivery", "")
+        if not delivery_id:
+            raise web.HTTPBadRequest(text="missing delivery id")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            raise web.HTTPBadRequest(text="invalid JSON")
+
+        outcome = await asyncio.to_thread(
+            record_github_event,
+            self._session_factory,
+            event_type,
+            delivery_id,
+            payload,
+        )
+        return web.Response(text=outcome)
 
     def _run_completion_eval(self, task_id: int) -> None:
         with self._session_factory() as session:

@@ -6,6 +6,43 @@ after its step's acceptance test passed.
 
 ---
 
+## 2026-07-30 — The ephemeral-database incident (postmortem + fixes)
+
+### `3e14b05` — Environment identity, Railway DB_PATH guard, job-applications read tool
+
+**What we found** (four real defects, discovered while chasing "nothing
+communicates with Spotter"):
+
+1. **Production data was destroyed on every deploy.** Railway's `DB_PATH` was
+   set to the relative `data/spotter.db`, which resolves inside the container's
+   ephemeral filesystem instead of the mounted volume. Every deploy rebuilt the
+   container → empty DB → re-seed. This — not the 20-turn history window — was
+   why Spotter "forgot" conversations, goals, milestones, and applications.
+   The backups added earlier were landing on the same ephemeral disk.
+   *Fix:* `DB_PATH=/data/spotter.db`, plus a boot guard: Spotter now REFUSES
+   to start on Railway (`RAILWAY_ENVIRONMENT` set) with a relative DB_PATH.
+2. **A local zombie process broke every local start.** A stale process held
+   port 8080; the dashboard bind failure crashed the whole app (bot included)
+   seconds after boot. *Fix (55f99ca):* bind failure logs loudly and the bot
+   continues without the web UI.
+3. **Chat had no read access to job applications** — the tracker was
+   dashboard-only, so "Spotter doesn't see my applications" was structural.
+   *Fix:* new read-only `list_job_applications` tool (15th tool).
+4. **Environment ambiguity**: two dashboards (local/Railway) and two bots
+   (dev/prod) with identical UIs made cross-pairing invisible. *Fix:* every
+   dashboard page now shows an identity badge (LOCAL amber / RAILWAY green,
+   DEV/PROD bot id) and a footer with the resolved DB path and live row
+   counts.
+
+**Red herrings burned along the way:** Telegram's getUpdates serves the
+newest request and 409s the in-flight one, so probing a token from outside
+always looks "clean" and proves nothing about whether a poller exists; and
+Railway's **Redeploy button rebuilds the SAME commit** — after auto-deploy
+silently skipped a push, redeploying kept shipping old code. Verify the
+active deployment's commit hash, not the deploy timestamp.
+
+---
+
 ## 2026-07-29 — Dashboard fixes
 
 ### Focus-zone priority ladder + adaptive layout

@@ -110,6 +110,9 @@ class Config:
     # Shared secret for GitHub webhook signature verification. Unset means the
     # /webhooks/github endpoint is not served at all (refuse rather than open).
     github_webhook_secret: str = ""
+    # Shared secret for Claude Code session notes (X-Spotter-Secret header).
+    # Same refusal pattern: unset means /webhooks/session is not served.
+    session_note_secret: str = ""
 
     @property
     def environment_label(self) -> str:
@@ -193,6 +196,7 @@ def load_config() -> Config:
         backup_retain=int(_get("BACKUP_RETAIN", "4")),
         railway_env=railway_env,
         github_webhook_secret=_optional("GITHUB_WEBHOOK_SECRET"),
+        session_note_secret=_optional("SESSION_NOTE_SECRET"),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),

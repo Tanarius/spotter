@@ -42,7 +42,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from .brain import _FALLBACK_REPLY as _BRAIN_FALLBACK
 from .brain import Brain
 from .config import Config
-from .ingest import record_github_event
+from .ingest import record_github_event, record_session_note
 from .db.models import (
     CapturedItem,
     ConversationLogEntry,
@@ -178,6 +178,10 @@ class Dashboard:
         # signature, not the session cookie (see _auth_middleware exemption).
         if self._config.github_webhook_secret:
             app.router.add_post("/webhooks/github", self._github_webhook)
+        # Claude Code session notes (memory phase 4B): same refusal pattern,
+        # authenticated by the X-Spotter-Secret header.
+        if self._config.session_note_secret:
+            app.router.add_post("/webhooks/session", self._session_webhook)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._config.web_port)
@@ -206,7 +210,7 @@ class Dashboard:
         # its handler; GitHub cannot hold a session cookie.
         if (
             request.path == "/login"
-            or request.path == "/webhooks/github"
+            or request.path.startswith("/webhooks/")
             or self._is_authenticated(request)
         ):
             return await handler(request)
@@ -276,6 +280,24 @@ class Dashboard:
             await asyncio.to_thread(self._run_completion_eval, task_id)
         except Exception:
             logger.exception("Milestone evaluation for task #%d failed", task_id)
+
+    # -- Claude Code session notes (memory phase 4B) ----------------------------
+
+    async def _session_webhook(self, request: web.Request) -> web.Response:
+        """Record an end-of-session status; auth via X-Spotter-Secret header."""
+        provided = request.headers.get("X-Spotter-Secret", "")
+        if not hmac.compare_digest(provided, self._config.session_note_secret):
+            logger.warning("Session note rejected: bad or missing secret")
+            raise web.HTTPUnauthorized(text="bad secret")
+        payload = await _json_body(request)
+        if not payload:
+            raise web.HTTPBadRequest(text="invalid or empty JSON body")
+        ok, outcome = await asyncio.to_thread(
+            record_session_note, self._session_factory, payload
+        )
+        if not ok:
+            raise web.HTTPBadRequest(text=outcome)
+        return web.Response(text=outcome)
 
     # -- GitHub webhook (memory phase 4A) ---------------------------------------
 

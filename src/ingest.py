@@ -29,6 +29,9 @@ _UTC_FMT = "%Y-%m-%d %H:%M:%S"
 _MAX_COMMITS_IN_DETAIL = 10
 # Push/PR events from GitHub are ground truth about the code.
 _GITHUB_CONFIDENCE = 1.0
+# Session notes are agent-written status: high trust, but a notch below commits.
+_SESSION_CONFIDENCE = 0.9
+_MAX_NOTE_FIELD_CHARS = 1000
 
 
 def record_github_event(
@@ -75,6 +78,61 @@ def record_github_event(
         target = project.name if project else f"unmapped repo {repo_full}"
         logger.info("GitHub %s event #%d recorded for %s", kind, event.id, target)
         return f"recorded event #{event.id} ({target})"
+
+
+def record_session_note(
+    session_factory: sessionmaker[Session], payload: dict[str, Any]
+) -> tuple[bool, str]:
+    """Store a Claude Code end-of-session status as an event.
+
+    Expected payload: ``project`` (name or repo), ``worked_on`` (required),
+    optional ``shipped``, ``blocked``, ``next``, ``session_id`` (dedupe key),
+    ``ended_at`` (ISO; defaults to now). Returns (ok, outcome).
+    """
+    project_ref = str(payload.get("project") or payload.get("repo") or "").strip()
+    fields = {
+        key: str(payload.get(key) or "").strip()[:_MAX_NOTE_FIELD_CHARS]
+        for key in ("worked_on", "shipped", "blocked", "next")
+    }
+    if not fields["worked_on"]:
+        return False, "worked_on is required"
+    session_id = str(payload.get("session_id") or "").strip() or None
+    occurred_at = _to_utc_str(payload.get("ended_at"))
+
+    with session_factory() as session, session.begin():
+        if session_id:
+            existing = session.scalar(
+                select(Event.id).where(
+                    Event.source == "claude_code", Event.external_id == session_id
+                )
+            )
+            if existing is not None:
+                return True, f"duplicate session note (event #{existing})"
+        project = _resolve_repo_project(session, project_ref, project_ref)
+        target = project.name if project else (project_ref or "unknown project")
+        headline = fields["worked_on"].splitlines()[0]
+        detail_parts = [f"WORKED ON: {fields['worked_on']}"]
+        if fields["shipped"]:
+            detail_parts.append(f"SHIPPED: {fields['shipped']}")
+        if fields["blocked"]:
+            detail_parts.append(f"BLOCKED: {fields['blocked']}")
+        if fields["next"]:
+            detail_parts.append(f"NEXT: {fields['next']}")
+        event = Event(
+            source="claude_code",
+            kind="session_note",
+            project_id=project.id if project else None,
+            subject=None if project else (project_ref or None),
+            summary=f"Claude Code session on {target}: {headline}",
+            detail="\n".join(detail_parts),
+            confidence=_SESSION_CONFIDENCE,
+            occurred_at=occurred_at,
+            external_id=session_id,
+        )
+        session.add(event)
+        session.flush()
+        logger.info("Session note event #%d recorded for %s", event.id, target)
+        return True, f"recorded session note #{event.id} ({target})"
 
 
 # -- payload extraction --------------------------------------------------------

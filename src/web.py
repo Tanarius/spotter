@@ -46,6 +46,7 @@ from .ingest import record_github_event
 from .db.models import (
     CapturedItem,
     ConversationLogEntry,
+    Event,
     JobApplication,
     Milestone,
     Project,
@@ -559,6 +560,31 @@ class Dashboard:
                     .order_by(Milestone.order_index, Milestone.id)
                 )
             }
+            # Recent ingested activity: latest event + a 7-day count per project.
+            activity_since = (
+                datetime.now(timezone.utc) - timedelta(days=14)
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            week_cut = (datetime.now(timezone.utc) - timedelta(days=7)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            latest_activity: dict[int, dict[str, Any]] = {}
+            for event in session.scalars(
+                select(Event)
+                .where(Event.occurred_at >= activity_since)
+                .order_by(Event.occurred_at.desc())
+            ):
+                if event.project_id is None:
+                    continue
+                entry = latest_activity.setdefault(
+                    event.project_id,
+                    {
+                        "summary": event.summary,
+                        "age_days": _age_days(event.occurred_at),
+                        "week_count": 0,
+                    },
+                )
+                if event.occurred_at >= week_cut:
+                    entry["week_count"] += 1
             tasks = session.scalars(
                 select(Task)
                 .where(Task.status.in_(_LIVE_TASK_STATUSES))
@@ -614,6 +640,7 @@ class Dashboard:
                         "goal": p.goal,
                         "bottleneck": p.current_bottleneck,
                         "active_milestone": active_milestones.get(p.id),
+                        "activity": latest_activity.get(p.id),
                     }
                     for p in projects
                 ],
@@ -844,6 +871,7 @@ input[type=password], input[type=text], input[type=date] {
   padding-bottom: 3px;
 }
 .pmeta b { color: #6fce93; font-weight: 600; }
+.pmeta.activity { color: #8fa3b8; }
 .trow {
   display: flex; align-items: center; gap: 8px; padding: 3px 0;
   border-bottom: 1px solid #1c1f25;
@@ -1184,6 +1212,9 @@ def _render_work(projects: list[dict[str, Any]], tasks: list[dict[str, Any]]) ->
         meta = _render_project_meta(p)
         if meta:
             parts.append(meta)
+        activity = _render_project_activity(p)
+        if activity:
+            parts.append(activity)
         parts.extend(_render_task_row(t) for t in group)
     unlinked = by_project.pop(None, [])
     if unlinked:
@@ -1215,6 +1246,25 @@ def _render_project_meta(project: dict[str, Any]) -> str:
     ]
     tooltip = html.escape(" · ".join(plain_bits), quote=True)
     return f"<div class='pmeta muted small' title='{tooltip}'>{full}</div>"
+
+
+def _render_project_activity(project: dict[str, Any]) -> str:
+    """Latest ingested event for the project: ground truth about movement."""
+    activity = project.get("activity")
+    if not activity:
+        return ""
+    age = activity["age_days"]
+    when = "today" if age == 0 else f"{age}d ago"
+    extra = (
+        f" · {activity['week_count']} events this week"
+        if activity.get("week_count", 0) > 1
+        else ""
+    )
+    text = f"{when}: {activity['summary']}{extra}"
+    return (
+        f"<div class='pmeta muted small activity' title='{html.escape(text, quote=True)}'>"
+        f"&#9889; {html.escape(text)}</div>"
+    )
 
 
 def _render_task_row(task: dict[str, Any]) -> str:

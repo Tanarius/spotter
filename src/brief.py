@@ -32,6 +32,7 @@ from .db.models import (
     Blocker,
     CapturedItem,
     DailyBrief,
+    Event,
     Milestone,
     Project,
     Task,
@@ -61,8 +62,15 @@ _BRIEF_SYSTEM_TEMPLATE = (
     "## Project goals and progress\n{goals}\n"
     "Frame the {label} around progress toward these goals — what moved toward the "
     "active milestone, what the bottleneck is blocking — not raw task counts. "
-    "If a project has no goal, don't invent one."
+    "If a project has no goal, don't invent one.\n\n"
+    "## Recent activity (ground truth — ingested events, newest first)\n{activity}\n"
+    "These are facts about what actually happened (commits, merges, session "
+    "notes) with when they happened. When they conflict with remembered claims "
+    "or task statuses, the events win — reason from them."
 )
+
+_ACTIVITY_WINDOW_DAYS = 7
+_MAX_ACTIVITY_LINES = 12
 
 
 @dataclass(frozen=True)
@@ -337,6 +345,32 @@ def _format_goal_context(session: Session) -> str:
     return "\n".join(lines)
 
 
+def _format_recent_activity(session: Session) -> str:
+    """Ingested events from the last week, newest first, project-labeled."""
+    since = (
+        datetime.now(timezone.utc) - timedelta(days=_ACTIVITY_WINDOW_DAYS)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    events = session.scalars(
+        select(Event)
+        .where(Event.occurred_at >= since)
+        .order_by(Event.occurred_at.desc())
+        .limit(_MAX_ACTIVITY_LINES + 20)
+    ).all()
+    if not events:
+        return "(no ingested activity in the last 7 days)"
+    project_names = {p.id: p.name for p in session.scalars(select(Project))}
+    lines = []
+    for event in events[:_MAX_ACTIVITY_LINES]:
+        name = project_names.get(event.project_id) or event.subject or "unmapped"
+        age = _days_since(event.occurred_at)
+        when = "today" if age == 0 else f"{age}d ago"
+        lines.append(f"- [{name}] {event.summary} ({when}, {event.source})")
+    hidden = len(events) - _MAX_ACTIVITY_LINES
+    if hidden > 0:
+        lines.append(f"- (+{hidden} more this week)")
+    return "\n".join(lines)
+
+
 def build_brief_system(
     config: Config, session: Session, label: str = "morning brief"
 ) -> str:
@@ -351,6 +385,7 @@ def build_brief_system(
         _BRIEF_SYSTEM_TEMPLATE.replace("{label}", label)
         .replace("{facts}", facts_text)
         .replace("{goals}", _format_goal_context(session))
+        .replace("{activity}", _format_recent_activity(session))
     )
     # Same per-call time block as the chat brain: the brief is the most
     # time-sensitive thing Spotter writes. {today} in the user prompt stays.

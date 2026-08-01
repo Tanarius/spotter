@@ -155,9 +155,10 @@ def seed_context(session: Session, seed: dict) -> SeedResult:
 
     INSERT-ONLY for live state. Keyed on stable identities:
       * projects -> matched by ``name``. Insert with seeded values; on existing
-        rows only priority and description (seed-managed metadata) may change.
-        ``status`` and the goal layer (goal, current_bottleneck,
-        goal_updated_at) are live state and are never touched.
+        rows only priority, description, and github_repo (seed-managed
+        metadata) may change. ``status`` and the goal layer (goal,
+        current_bottleneck, goal_updated_at) are live state and are never
+        touched.
       * tasks    -> matched by (project, title). Insert if missing; an existing
         task — whatever its status — is skipped entirely, so a completed task
         can never be resurrected by a redeploy.
@@ -188,15 +189,22 @@ def seed_context(session: Session, seed: dict) -> SeedResult:
                 status=row.get("status", "active"),
                 priority=row.get("priority", 0),
                 description=_clean(row.get("description")),
+                github_repo=_clean(row.get("github_repo")),
             )
             session.add(project)
             counts["projects_inserted"] += 1
         else:
             priority = row.get("priority", 0)
             description = _clean(row.get("description"))
-            if project.priority != priority or project.description != description:
+            github_repo = _clean(row.get("github_repo"))
+            if (
+                project.priority != priority
+                or project.description != description
+                or project.github_repo != github_repo
+            ):
                 project.priority = priority
                 project.description = description
+                project.github_repo = github_repo
                 counts["projects_updated"] += 1
         session.flush()  # ensure project.id for the next-action task
 

@@ -14,6 +14,9 @@ projects:
   - name: ProjectOne
     status: active            # active | paused | done
     priority: 10              # integer, higher = more important
+    github_repo: you/repo-one # optional: GitHub repo whose webhook events map
+                              # to this project ("owner/name" or bare name).
+                              # Omit when the repo name matches the project name.
     description: >-
       One-line description of your highest-priority project.
     next_action: >-

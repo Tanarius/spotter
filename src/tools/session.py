@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 
 from ..db.models import Blocker, Event, Milestone
+from ..ingest import supersede_previous_session_notes
 from ..tools.next_action import _next_task
 from .base import ToolContext, resolve_project, utc_now_str
 
@@ -119,6 +120,7 @@ def end_session(ctx: ToolContext, tool_input: dict[str, Any]) -> str:
     )
     session.add(event)
     session.flush()
+    supersede_previous_session_notes(session, project.id, event.id)
     return (
         f"Session on {project.name} closed and remembered (event #{event.id}). "
         "It'll be the warm-start context next time. Confirm briefly — no recap "

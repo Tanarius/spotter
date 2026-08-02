@@ -384,5 +384,27 @@
       },
       "required": ["note"]
     }
+  },
+  {
+    "name": "supersede_event",
+    "description": "Retire a stale event when newer information contradicts it. Use when query_events surfaces something you can SEE is outdated (an old claim contradicted by a newer commit, session note, or what the user just said). Pass the newer event as replacement_event_id when one exists; otherwise the stated reason becomes a correction event. The retired event stops surfacing in retrieval. Never retire something merely old - only something contradicted.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "integer",
+          "description": "The stale event to retire (query_events results show 'event #N')."
+        },
+        "reason": {
+          "type": "string",
+          "description": "What newer information contradicts it, specifically."
+        },
+        "replacement_event_id": {
+          "type": "integer",
+          "description": "Optional: the newer event that supersedes it, if one exists in the log."
+        }
+      },
+      "required": ["event_id", "reason"]
+    }
   }
 ]

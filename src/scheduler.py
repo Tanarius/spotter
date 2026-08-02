@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 _BRIEF_JOB_ID = "morning_brief"
 _BACKUP_JOB_ID = "weekly_backup"
 _NUDGE_JOB_ID = "daily_nudge"
+_DIGEST_JOB_ID = "weekly_digest"
+# Weekly digest slot: Sunday evening, after the week's work is in the log.
+_DIGEST_DAY_OF_WEEK = "sun"
+_DIGEST_HOUR = 18
 # If Spotter is down at BRIEF_TIME and comes back within this window, still fire.
 _MISFIRE_GRACE_SECONDS = 3600
 # Weekly backup slot: quiet hours, local time. Missed runs are handled by the
@@ -65,6 +69,21 @@ class SpotterScheduler:
             callback,
             CronTrigger(hour=hour, minute=minute, timezone=self._tz),
             id=_NUDGE_JOB_ID,
+            replace_existing=True,
+            misfire_grace_time=_MISFIRE_GRACE_SECONDS,
+        )
+
+    def schedule_weekly_digest(self, callback: Callable[[], Awaitable[None]]) -> Job:
+        """Register the weekly-digest coroutine (Sunday 18:00, config tz)."""
+        return self._scheduler.add_job(
+            callback,
+            CronTrigger(
+                day_of_week=_DIGEST_DAY_OF_WEEK,
+                hour=_DIGEST_HOUR,
+                minute=0,
+                timezone=self._tz,
+            ),
+            id=_DIGEST_JOB_ID,
             replace_existing=True,
             misfire_grace_time=_MISFIRE_GRACE_SECONDS,
         )

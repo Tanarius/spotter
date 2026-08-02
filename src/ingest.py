@@ -131,8 +131,32 @@ def record_session_note(
         )
         session.add(event)
         session.flush()
+        if project is not None:
+            supersede_previous_session_notes(session, project.id, event.id)
         logger.info("Session note event #%d recorded for %s", event.id, target)
         return True, f"recorded session note #{event.id} ({target})"
+
+
+def supersede_previous_session_notes(
+    session: Session, project_id: int, new_event_id: int
+) -> int:
+    """The newest session note for a project retires all prior live ones.
+
+    'Where things stand' has exactly one current answer per project; older
+    notes stay in the log (history) but stop surfacing in retrieval.
+    """
+    superseded = 0
+    for old in session.scalars(
+        select(Event).where(
+            Event.project_id == project_id,
+            Event.kind == "session_note",
+            Event.superseded_by.is_(None),
+            Event.id != new_event_id,
+        )
+    ):
+        old.superseded_by = new_event_id
+        superseded += 1
+    return superseded
 
 
 # -- payload extraction --------------------------------------------------------

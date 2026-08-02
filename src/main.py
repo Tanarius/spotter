@@ -15,6 +15,7 @@ from .bot import run_bot
 from .brain import Brain
 from .brief import BriefService
 from .conditions import ConditionsService
+from .digest import digest_is_due, write_weekly_digest
 from .config import load_config
 from .db import initialize_database, make_session_factory
 from .scheduler import SpotterScheduler
@@ -92,9 +93,16 @@ def main() -> None:
             except Exception:
                 logger.exception("Weekly backup failed")
 
+        async def _digest_job() -> None:
+            try:
+                await asyncio.to_thread(write_weekly_digest, session_factory)
+            except Exception:
+                logger.exception("Weekly digest failed")
+
         loop_holder.append(asyncio.get_running_loop())
         scheduler.schedule_daily_brief(_brief_job)
         scheduler.schedule_weekly_backup(_backup_job)
+        scheduler.schedule_weekly_digest(_digest_job)
         scheduler.schedule_daily_nudge(conditions_service.run_check)
         trigger_service.bind_bot(application.bot)
         conditions_service.bind_bot(application.bot)
@@ -117,6 +125,9 @@ def main() -> None:
         if backup_is_due(config.db_path):
             logger.info("Newest DB backup is stale or missing; backing up now")
             asyncio.get_running_loop().create_task(_backup_job())
+        if digest_is_due(session_factory):
+            logger.info("Weekly digest is stale or missing; writing one now")
+            asyncio.get_running_loop().create_task(_digest_job())
         logger.info(
             "Scheduler started; morning brief at %s %s",
             config.brief_time,

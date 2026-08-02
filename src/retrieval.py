@@ -221,10 +221,19 @@ class Retriever:
     # -- search ----------------------------------------------------------------
 
     def rank(
-        self, session: Session, query: str, events: list[Event]
+        self,
+        session: Session,
+        query: str,
+        events: list[Event],
+        query_vector: list[float] | None = None,
     ) -> list[RankedEvent]:
-        """Hybrid-score ``events`` against ``query``, best first."""
-        query_vector = self._embedder.embed([query], "query")[0]
+        """Hybrid-score ``events`` against ``query``, best first.
+
+        ``query_vector`` lets callers batch-embed many queries in one API call
+        (the eval harness does; free-tier rate limits punish per-query calls).
+        """
+        if query_vector is None:
+            query_vector = self._embedder.embed([query], "query")[0]
         vectors = {
             row.ref_id: _unpack(row.vector)
             for row in session.scalars(

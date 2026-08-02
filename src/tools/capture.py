@@ -6,8 +6,8 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from ..db.models import CapturedItem, Project
-from .base import ToolContext
+from ..db.models import CapturedItem, Event, Project
+from .base import ToolContext, utc_now_str
 
 # Mirrors the enum in tools_schema.json; used to default unknown categories.
 _DEFAULT_CATEGORY = "thought"
@@ -33,6 +33,22 @@ def capture_item(ctx: ToolContext, tool_input: dict[str, Any]) -> str:
     )
     ctx.session.add(item)
     ctx.session.flush()  # populate item.id within the transaction
+
+    # Dual-write into the event log (phase 4C): the capture is also a
+    # provenance-stamped happening, so retrieval can rank it by age and source.
+    snippet = content.splitlines()[0][:160]
+    ctx.session.add(
+        Event(
+            source="user_dashboard" if item.source == "dashboard" else "user_chat",
+            kind="capture",
+            project_id=item.project_id,
+            summary=f"Captured ({category}): {snippet}",
+            detail=content if content != snippet else None,
+            confidence=0.8,  # a remembered mention is a claim, not a fact
+            occurred_at=utc_now_str(),
+            external_id=f"capture-{item.id}",
+        )
+    )
 
     where = ""
     if project_name:

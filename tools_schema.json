@@ -328,5 +328,26 @@
         }
       }
     }
+  },
+  {
+    "name": "query_events",
+    "description": "Search the event log - what ACTUALLY happened: commits, PR merges, Claude Code session notes, captures - ranked by recency and source confidence (a fresh commit outranks an old remembered claim; superseded entries are excluded). Use for 'what happened on X', 'where does Y stand', 'did anything ship', 'what did I work on recently'. Prefer this over query_memory for questions about recent state or activity, and cite the age and source of what you report.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Optional keywords; all must appear in an event. Omit to list recent activity."
+        },
+        "project_name": {
+          "type": "string",
+          "description": "Optional: limit to one project's events."
+        },
+        "days": {
+          "type": "integer",
+          "description": "Look-back window in days. Default 30, max 365."
+        }
+      }
+    }
   }
 ]

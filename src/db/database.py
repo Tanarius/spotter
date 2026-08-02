@@ -23,7 +23,15 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..config import ROOT_DIR
-from .models import FTS_STATEMENTS, Base, Project, Task, WorkspaceFact
+from .models import (
+    FTS_STATEMENTS,
+    Base,
+    CapturedItem,
+    Event,
+    Project,
+    Task,
+    WorkspaceFact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +308,73 @@ def _clean(value: object) -> str | None:
     return text_value or None
 
 
+def backfill_event_log(session: Session) -> tuple[int, int]:
+    """Idempotently migrate captures and facts into the event log (phase 4C).
+
+    Each migrated row keeps its TRUE provenance: a Telegram capture becomes a
+    ``user_chat`` event, a dashboard capture ``user_dashboard``, and its
+    original created_at becomes ``occurred_at`` — so old knowledge decays in
+    retrieval instead of masquerading as fresh. ``external_id`` (capture-N /
+    fact-N) makes re-runs no-ops. Returns (captures_migrated, facts_migrated).
+    """
+    existing = {
+        ext
+        for ext in session.scalars(
+            select(Event.external_id).where(Event.external_id.is_not(None))
+        )
+    }
+    capture_sources = {
+        "telegram": "user_chat",
+        "voice": "user_chat",
+        "dashboard": "user_dashboard",
+        "brief": "inferred",
+    }
+    captures_migrated = 0
+    for item in session.scalars(select(CapturedItem)):
+        external_id = f"capture-{item.id}"
+        if external_id in existing:
+            continue
+        snippet = item.content.splitlines()[0][:160]
+        session.add(
+            Event(
+                source=capture_sources.get(item.source, "inferred"),
+                kind="capture",
+                project_id=item.project_id,
+                summary=f"Captured ({item.category or 'note'}): {snippet}",
+                detail=item.content if item.content != snippet else None,
+                confidence=0.8,  # a remembered mention is a claim, not a fact
+                occurred_at=item.created_at,
+                external_id=external_id,
+            )
+        )
+        captures_migrated += 1
+
+    facts_migrated = 0
+    for fact in session.scalars(select(WorkspaceFact)):
+        external_id = f"fact-{fact.id}"
+        if external_id in existing:
+            continue
+        snippet = fact.content.splitlines()[0][:160]
+        occurred = (
+            fact.updated_at
+            if fact.updated_at and fact.updated_at != fact.created_at
+            else fact.created_at
+        )
+        session.add(
+            Event(
+                source="user_chat",  # facts are user-authored context
+                kind="fact",
+                summary=f"Fact ({fact.category}): {snippet}",
+                detail=fact.content if fact.content != snippet else None,
+                confidence=fact.confidence or 1.0,
+                occurred_at=occurred,
+                external_id=external_id,
+            )
+        )
+        facts_migrated += 1
+    return captures_migrated, facts_migrated
+
+
 def initialize_database(
     db_path: Path, seed_yaml: str | None = None
 ) -> tuple[Engine, int]:
@@ -318,6 +393,13 @@ def initialize_database(
     with Session(engine) as session, session.begin():
         result = seed_context(session, seed)
         project_count = session.scalar(select(func.count()).select_from(Project)) or 0
+        captures_migrated, facts_migrated = backfill_event_log(session)
+        if captures_migrated or facts_migrated:
+            logger.info(
+                "Event-log backfill: %d captures, %d facts migrated",
+                captures_migrated,
+                facts_migrated,
+            )
 
     logger.info(
         "Database initialized at %s (%s); %d projects. Seed: %s",

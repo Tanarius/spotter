@@ -24,6 +24,7 @@ from .goal import (
 from .events import query_events
 from .handoff import prepare_handoff
 from .jobs import list_job_applications
+from .session import end_session, start_session
 from .intent import schedule_intent
 from .memory import query_memory
 from .next_action import surface_next_action
@@ -31,7 +32,7 @@ from .stall import name_the_stall
 from .reminder import schedule_reminder
 from .status import update_task_status
 
-# name -> handler. Sixteen tools registered; update_workspace_doc deferred.
+# name -> handler. Eighteen tools registered; update_workspace_doc deferred.
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "capture_item": capture_item,
     "query_memory": query_memory,
@@ -49,6 +50,8 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "prepare_handoff": prepare_handoff,
     "list_job_applications": list_job_applications,
     "query_events": query_events,
+    "start_session": start_session,
+    "end_session": end_session,
 }
 
 __all__ = ["TOOL_HANDLERS", "ToolContext", "ToolHandler"]

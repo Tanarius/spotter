@@ -173,6 +173,9 @@ class Dashboard:
         app.router.add_post("/api/shrink", self._api_shrink)
         app.router.add_post("/api/stall-check", self._api_stall_check)
         app.router.add_post("/api/handoff", self._api_handoff)
+        # Dashboard chat (4F): same brain, same tools, LOGGED turns — web and
+        # Telegram share one conversation stream.
+        app.router.add_post("/api/chat", self._api_chat)
         # GitHub webhook ingestion (memory phase 4A). Only registered when a
         # secret exists — no secret, no endpoint. Auth is GitHub's HMAC
         # signature, not the session cookie (see _auth_middleware exemption).
@@ -478,6 +481,19 @@ class Dashboard:
     async def _api_handoff(self, request: web.Request) -> web.Response:
         result = await asyncio.to_thread(self._generate_handoff)
         return web.json_response(result)
+
+    async def _api_chat(self, request: web.Request) -> web.Response:
+        """One chat turn through the shared brain (full tool loop, logged)."""
+        body = await _json_body(request)
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return web.json_response({"ok": False, "text": "Say something first."})
+        try:
+            reply = await asyncio.to_thread(self._brain.respond, message)
+        except Exception:
+            logger.exception("Dashboard chat turn failed")
+            return web.json_response({"ok": False, "text": ""})
+        return web.json_response({"ok": bool(reply), "text": reply})
 
     def _generate_handoff(self) -> dict[str, Any]:
         """A Claude Code handoff prompt for the hero task (unlogged brain turn)."""
@@ -930,6 +946,18 @@ input[type=password], input[type=text], input[type=date] {
   margin-top: 20px; padding-top: 8px; border-top: 1px solid #23262d;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* dashboard chat */
+.chat { margin-top: 14px; }
+.chat #chat-log {
+  display: flex; flex-direction: column; gap: 6px; margin: 8px 0;
+  max-height: 320px; overflow-y: auto;
+}
+.bubble {
+  padding: 7px 11px; border-radius: 10px; max-width: 85%;
+  white-space: pre-wrap; font-size: 13.5px; word-break: break-word;
+}
+.bubble.me { align-self: flex-end; background: #1d3a2a; color: #d9f2e2; }
+.bubble.bot { align-self: flex-start; background: #1c1f25; border: 1px solid #2a2e36; }
 .pipeline { font-size: 13px; color: #7d8590; padding: 2px 0 4px; }
 .empty { color: #667080; font-style: italic; font-size: 13px; padding: 4px 0; }
 .toast {
@@ -1061,6 +1089,39 @@ if (hero) {
   });
   if (hero.dataset.generate === '1') agent('/api/next-action', {});
 }
+const chatForm = document.getElementById('chat-form');
+if (chatForm) {
+  const chatLog = document.getElementById('chat-log');
+  const chatInput = document.getElementById('chat-input');
+  function bubble(cls, text) {
+    const div = document.createElement('div');
+    div.className = 'bubble ' + cls;
+    div.textContent = text;
+    chatLog.appendChild(div);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    return div;
+  }
+  chatForm.addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    const text = chatInput.value.trim();
+    if (!text) return;
+    chatInput.value = '';
+    bubble('me', text);
+    const pending = bubble('bot', 'Thinking\\u2026');
+    try {
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: text}),
+      });
+      const data = await r.json();
+      pending.textContent =
+        data.ok ? data.text : (data.text || 'Something went wrong \\u2014 try again.');
+    } catch (err) {
+      pending.textContent = 'Something went wrong \\u2014 try again.';
+    }
+  });
+}
 """
 
 
@@ -1120,6 +1181,12 @@ def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") 
         _render_strip(state),
         _render_quick_add(state["projects"]),
         f"<div class='{grid_class}'><div>{''.join(left)}</div><div>{''.join(right)}</div></div>",
+        "<details class='chat'><summary>Chat with Spotter</summary>"
+        "<div id='chat-log'></div>"
+        "<form id='chat-form' class='qa-row'>"
+        "<input type='text' id='chat-input' autocomplete='off' "
+        "placeholder='Same brain, tools, and memory as Telegram…'>"
+        "<button class='accent'>Send</button></form></details>",
         _render_footer(state),
     ]
     return _page("Spotter", "".join(sections), script=_HERO_SCRIPT)

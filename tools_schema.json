@@ -349,5 +349,40 @@
         }
       }
     }
+  },
+  {
+    "name": "start_session",
+    "description": "The user is STARTING a work session ('starting on Simmer', 'about to work on X', 'sitting down to code'). Call this to pull the warm-start context: where the last session left off, what has moved since (commits, notes), the active milestone, the next action on record, and open blockers. Then give them a short warm start pointing at the ONE thing to do first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "Which project. Defaults to the highest-priority active project."
+        }
+      }
+    }
+  },
+  {
+    "name": "end_session",
+    "description": "The user is ENDING a work session ('done for now', 'wrapping up', 'calling it'). Capture where they left off so the next session starts warm: summarize what they said happened into note (and next if stated), or ask one short question to get it if they gave nothing. Writes a session_note event into memory.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "Which project. Defaults to the highest-priority active project."
+        },
+        "note": {
+          "type": "string",
+          "description": "Where things stand: what was worked on / what happened, 1-3 sentences."
+        },
+        "next": {
+          "type": "string",
+          "description": "Optional: the stated next step for next session."
+        }
+      },
+      "required": ["note"]
+    }
   }
 ]

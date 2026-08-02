@@ -22,8 +22,13 @@ from telegram.ext import (
 
 from .brain import Brain
 from .config import Config
+from .voice import TranscriptionError, transcribe
 
 logger = logging.getLogger(__name__)
+
+# Echo at most this much of a transcript back with the reply, so the user can
+# verify what was heard without drowning the answer.
+_TRANSCRIPT_ECHO_CHARS = 200
 
 # Lifecycle hooks: awaited by PTB after startup / before shutdown, on the loop.
 LifecycleHook = Callable[[Application], Awaitable[None]]
@@ -48,6 +53,7 @@ def build_application(
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message)
     )
+    application.add_handler(MessageHandler(filters.VOICE, _handle_voice))
     return application
 
 
@@ -69,6 +75,33 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # event loop so long-polling stays responsive.
     reply = await asyncio.to_thread(brain.respond, message.text)
     await message.reply_text(reply)
+
+
+async def _handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Voice note -> Whisper transcript -> the same brain path as text."""
+    config: Config = context.bot_data["config"]
+    brain: Brain = context.bot_data["brain"]
+
+    user = update.effective_user
+    if user is None or user.id != config.telegram_allowed_user_id:
+        return
+    message = update.effective_message
+    if message is None or message.voice is None:
+        return
+
+    telegram_file = await message.voice.get_file()
+    audio = bytes(await telegram_file.download_as_bytearray())
+    try:
+        transcript = await asyncio.to_thread(transcribe, config, audio)
+    except TranscriptionError as exc:
+        await message.reply_text(str(exc))
+        return
+
+    reply = await asyncio.to_thread(brain.respond, transcript)
+    echoed = transcript[:_TRANSCRIPT_ECHO_CHARS]
+    if len(transcript) > _TRANSCRIPT_ECHO_CHARS:
+        echoed += "…"
+    await message.reply_text(f'\U0001f399 "{echoed}"\n\n{reply}')
 
 
 def run_bot(

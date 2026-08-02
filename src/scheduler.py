@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _BRIEF_JOB_ID = "morning_brief"
 _BACKUP_JOB_ID = "weekly_backup"
+_NUDGE_JOB_ID = "daily_nudge"
 # If Spotter is down at BRIEF_TIME and comes back within this window, still fire.
 _MISFIRE_GRACE_SECONDS = 3600
 # Weekly backup slot: quiet hours, local time. Missed runs are handled by the
@@ -49,6 +50,21 @@ class SpotterScheduler:
             callback,
             CronTrigger(hour=hour, minute=minute, timezone=self._tz),
             id=_BRIEF_JOB_ID,
+            replace_existing=True,
+            misfire_grace_time=_MISFIRE_GRACE_SECONDS,
+        )
+
+    def schedule_daily_nudge(self, callback: Callable[[], Awaitable[None]]) -> Job:
+        """Register the conditions-engine check daily at NUDGE_TIME (config tz).
+
+        No misfire catch-up beyond the shared grace: a nudge that missed its
+        slot shouldn't fire at some odd hour — tomorrow's check covers it.
+        """
+        hour, minute = _parse_hhmm(self._config.nudge_time)
+        return self._scheduler.add_job(
+            callback,
+            CronTrigger(hour=hour, minute=minute, timezone=self._tz),
+            id=_NUDGE_JOB_ID,
             replace_existing=True,
             misfire_grace_time=_MISFIRE_GRACE_SECONDS,
         )

@@ -14,6 +14,7 @@ from .backup import run_backup
 from .bot import run_bot
 from .brain import Brain
 from .brief import BriefService
+from .conditions import ConditionsService
 from .config import load_config
 from .db import initialize_database, make_session_factory
 from .scheduler import SpotterScheduler
@@ -48,6 +49,7 @@ def main() -> None:
     brief_service = BriefService(config, client, session_factory)
     scheduler = SpotterScheduler(config)
     trigger_service = TriggerService(config, client, session_factory, scheduler)
+    conditions_service = ConditionsService(config, session_factory)
 
     # Tool handlers run in a worker thread (asyncio.to_thread); hop back onto
     # the event loop before touching the loop-bound scheduler. The loop is
@@ -93,7 +95,9 @@ def main() -> None:
         loop_holder.append(asyncio.get_running_loop())
         scheduler.schedule_daily_brief(_brief_job)
         scheduler.schedule_weekly_backup(_backup_job)
+        scheduler.schedule_daily_nudge(conditions_service.run_check)
         trigger_service.bind_bot(application.bot)
+        conditions_service.bind_bot(application.bot)
         registered, caught_up = trigger_service.register_pending()
         scheduler.start()
         logger.info(

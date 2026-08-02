@@ -117,6 +117,10 @@ class Config:
     # degrades to keyword scoring (never an error).
     voyage_api_key: str = ""
     embed_model: str = "voyage-3.5-lite"
+    # Daily conditions-engine check (at most one nudge/day), HH:MM local.
+    nudge_time: str = "13:00"
+    # Groq Whisper model for Telegram voice messages.
+    groq_whisper_model: str = "whisper-large-v3-turbo"
 
     @property
     def environment_label(self) -> str:
@@ -203,6 +207,8 @@ def load_config() -> Config:
         session_note_secret=_optional("SESSION_NOTE_SECRET"),
         voyage_api_key=_optional("VOYAGE_API_KEY"),
         embed_model=_get("EMBED_MODEL", "voyage-3.5-lite"),
+        nudge_time=_get("NUDGE_TIME", "13:00"),
+        groq_whisper_model=_get("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo"),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),

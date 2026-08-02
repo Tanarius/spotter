@@ -6,6 +6,22 @@ after its step's acceptance test passed.
 
 ---
 
+## 2026-08-02 — Polish round: supersession, digest, evals
+
+### `e3d513f` — Supersession authoring, weekly digest, retrieval eval harness
+
+Supersession both ways: the newest session note automatically retires its
+predecessor per project, and the `supersede_event` tool lets the model retire
+a claim it can SEE is contradicted (pointing at the newer event, or minting a
+correction event). Weekly digest: Sundays the week condenses into one
+inferred-source event (idempotent per ISO week, boot catch-up), so
+long-horizon retrieval finds summaries, not sixty raw rows. Eval harness:
+`python -m src.evals` measures the ranker (hit@1 / hit@3 / MRR over a fixed
+query set) — first run: real embeddings 0.62/0.88/0.78 vs hash-mode
+0.25/0.62/0.50, turning weight tuning from vibes into numbers. 19 tools.
+
+---
+
 ## 2026-08-02 — The memory layer completed (4D–4F)
 
 ### `dbcd12b` — Voice, session start/stop, dashboard chat (4F)

@@ -175,8 +175,6 @@ Spotter was built in strict, verified steps, each committed only after its accep
 **Working:** the full agent loop with 18 tools; the memory layer — GitHub webhook + Claude Code session-note ingestion into a provenance event log (`occurred_at` vs `recorded_at`, per-source confidence, supersession), semantic retrieval with explainable hybrid re-ranking (Voyage embeddings fused with recency decay, source confidence, and subject match; keyword fallback), and searchable conversation history; the conditions engine (at most one data-driven nudge per day); voice input via Groq Whisper; session start/stop warm-starts; the goal/milestone layer with goal-aware next actions and progress-aware briefs; Claude Code handoff prompts; the agent-backed web dashboard with embedded chat and a job-applications tracker; insert-only seeding; weekly backups with boot catch-up; dev/prod bot separation; and the reliability guards above.
 
 **Roadmap (deliberately deferred, not missing):**
-- Supersession authoring (retiring stale events when new ones contradict them)
-- A retrieval eval harness (fixed question→event pairs to tune ranking weights measurably)
 - Commitment-date nudges (needs parsed dates, not free-text intents)
 - The optional Google Doc workspace mirror
 - User identity as setup config rather than prompt text

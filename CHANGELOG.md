@@ -6,6 +6,42 @@ after its step's acceptance test passed.
 
 ---
 
+## 2026-08-02 — The memory layer completed (4D–4F)
+
+### `dbcd12b` — Voice, session start/stop, dashboard chat (4F)
+
+Telegram voice notes transcribe via Groq Whisper and route through the same
+brain as text (transcript echoed back; failures degrade to plain replies).
+`start_session` assembles the warm start — last session note, events since,
+active milestone, bottleneck, next action, blockers; `end_session` writes
+where you stopped into the event log so the next start is warm. The dashboard
+gains a chat box (`/api/chat`) running full logged brain turns — web and
+Telegram share one conversation stream. 18 tools active.
+
+### `f9815f9` — Conditions engine (4E)
+
+Daily check (NUDGE_TIME, default 13:00 local) over three deterministic
+conditions in priority order: milestone_stuck (commits landing while the
+active milestone hasn't moved), project_inactive (12+ days of zero activity
+across all channels), stale_next (the flagged next action untouched 3+ days —
+the stall pattern from data). Hard cap: ONE nudge per local day, plus 3-day
+per-condition cooldowns, both enforced through nudge events in the log.
+Messages are templated from queried numbers — no model call, always specific
+and true.
+
+### `77ac7dc`, `5d0b6e1` — Semantic retrieval with hybrid re-ranking (4D)
+
+Voyage AI embeddings (`VOYAGE_API_KEY`, lazily indexed into SQLite as packed
+float32) with the explainable hybrid score: 0.50 semantic + 0.25 recency
+(14-day half-life) + 0.15 source confidence + 0.10 subject match.
+`query_events` shows the per-signal breakdown on every result; conversation
+history (last 500 turns, confidence 0.6) joins the index and `query_memory`'s
+captured/facts/all scopes are semantic-first — closing the
+short-chats-vanish-from-recall gap. Everything falls back to keyword search
+on a missing key or API failure: retrieval degrades, never breaks.
+
+---
+
 ## 2026-07-30 → 08-01 — The memory layer (phases 4A–4C)
 
 Turning Spotter from "knows what you told it" into "knows what happened."

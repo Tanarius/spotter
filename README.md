@@ -172,15 +172,14 @@ Spotter was built in strict, verified steps, each committed only after its accep
 
 **Live** — deployed on Railway, running 24/7, in personal daily use.
 
-**Working:** the full agent loop with 14 tools, layered memory with on-demand retrieval, the goal/milestone layer with goal-aware next actions and progress-aware briefs, Claude Code handoff prompts, morning brief + evening check-in + chat-created reminders with downtime catch-up, the agent-backed web dashboard with a job-applications tracker, insert-only seeding, weekly database backups with boot catch-up, dev/prod bot separation, and the reliability guards above.
+**Working:** the full agent loop with 18 tools; the memory layer — GitHub webhook + Claude Code session-note ingestion into a provenance event log (`occurred_at` vs `recorded_at`, per-source confidence, supersession), semantic retrieval with explainable hybrid re-ranking (Voyage embeddings fused with recency decay, source confidence, and subject match; keyword fallback), and searchable conversation history; the conditions engine (at most one data-driven nudge per day); voice input via Groq Whisper; session start/stop warm-starts; the goal/milestone layer with goal-aware next actions and progress-aware briefs; Claude Code handoff prompts; the agent-backed web dashboard with embedded chat and a job-applications tracker; insert-only seeding; weekly backups with boot catch-up; dev/prod bot separation; and the reliability guards above.
 
 **Roadmap (deliberately deferred, not missing):**
-- Embedded dashboard chat through the same brain
-- Searchable conversation history (short chats currently fall out of the 20-turn replay window and aren't reachable via `query_memory`)
-- Voice input (Whisper transcription)
+- Supersession authoring (retiring stale events when new ones contradict them)
+- A retrieval eval harness (fixed question→event pairs to tune ranking weights measurably)
+- Commitment-date nudges (needs parsed dates, not free-text intents)
 - The optional Google Doc workspace mirror
 - User identity as setup config rather than prompt text
-- An eval harness for prompt-regression testing at scale
 
 ---
 

@@ -204,7 +204,7 @@ def _extract_pull_request(
 def _resolve_repo_project(
     session: Session, repo_full: str, repo_name: str
 ) -> Project | None:
-    """github_repo column match ('owner/name' or 'name') else name == name."""
+    """github_repo match (full, bare, or name-tail) else repo name == project name."""
     for candidate in (repo_full, repo_name):
         if not candidate:
             continue
@@ -216,8 +216,16 @@ def _resolve_repo_project(
         if project is not None:
             return project
     if repo_name:
+        # A bare repo name should also match a github_repo stored as
+        # 'owner/name' — compare against the segment after the slash.
+        lowered = repo_name.lower()
+        for project in session.scalars(
+            select(Project).where(Project.github_repo.is_not(None))
+        ):
+            if (project.github_repo or "").lower().split("/")[-1] == lowered:
+                return project
         return session.scalar(
-            select(Project).where(func.lower(Project.name) == repo_name.lower())
+            select(Project).where(func.lower(Project.name) == lowered)
         )
     return None
 

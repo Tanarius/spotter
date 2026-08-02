@@ -6,6 +6,45 @@ after its step's acceptance test passed.
 
 ---
 
+## 2026-07-30 → 08-01 — The memory layer (phases 4A–4C)
+
+Turning Spotter from "knows what you told it" into "knows what happened."
+Everything lands in one `events` table with full provenance: `source`
+(github / claude_code / user_chat / user_dashboard / inferred), `kind`,
+`occurred_at` (when it happened) vs `recorded_at` (when Spotter learned),
+`confidence`, `external_id` dedupe, and `superseded_by` retirement.
+
+### `f53252f` — Provenance-aware retrieval (4C)
+
+Existing captures and facts backfill idempotently into the event log with
+their true sources and original timestamps; `capture_item` dual-writes an
+event per capture going forward. New `query_events` tool ranks by
+`confidence × recency decay` (14-day half-life on `occurred_at`) — a fresh
+commit outranks a three-week-old remembered sentence, superseded rows never
+surface, every result carries its age and source, and the empty state
+refuses to pass old memory off as current.
+
+### `a6db14c`, `d702513` — Claude Code session notes (4B)
+
+`POST /webhooks/session` (gated by `SESSION_NOTE_SECRET`, `X-Spotter-Secret`
+header) records end-of-session status — worked_on / shipped / blocked /
+next — as `claude_code` events at confidence 0.9. Project repos carry a
+CLAUDE.md instruction to report at session end using user-level env vars
+(`SPOTTER_URL`, `SPOTTER_SESSION_SECRET`), so no secret ever enters a repo.
+Bare repo names resolve against the `github_repo` name-tail
+(mealprep → Simmer).
+
+### `3167681`, `d702e93`, `b825cae` — GitHub ingestion + surfacing (4A)
+
+Signed GitHub webhooks (`/webhooks/github`, HMAC, no-secret = no endpoint)
+record pushes and PR opens/merges with commit timestamps as `occurred_at`.
+Repo → project mapping via seed-managed `projects.github_repo` or name
+match; unmapped repos keep events under `subject`. Dashboard project rows
+show a ⚡ latest-activity line; the brief/check-in system prompt carries a
+ground-truth activity block with the rule that events beat remembered claims.
+
+---
+
 ## 2026-07-30 — The ephemeral-database incident (postmortem + fixes)
 
 ### `3e14b05` — Environment identity, Railway DB_PATH guard, job-applications read tool

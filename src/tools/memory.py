@@ -1,22 +1,39 @@
 """query_memory — search captured items, facts, tasks, and blockers.
 
-captured_items and workspace_facts have FTS5 indexes, so those scopes use
-``MATCH``. tasks and blockers have no FTS table, so they fall back to a ``LIKE``
-substring search. ``scope='all'`` searches every layer and returns the top
-matches up to ``limit``.
+Phase 4D: the ``captured``/``facts``/``all`` scopes are semantic-first — the
+hybrid retriever ranks events (captures + facts live there since 4C) and, for
+``all``, conversation history too, so short chats stop vanishing from recall.
+No embedder or an API failure falls back to the original FTS5 ``MATCH``
+search. ``tasks`` and ``blockers`` stay keyword ``LIKE`` — they're structured
+status rows, where exact matching is the right tool.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..retrieval import (
+    MemoryHit,
+    RetrievalUnavailable,
+    Retriever,
+    get_embedder,
+)
 from .base import ToolContext
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_LIMIT = 5
+# scope -> (layers, event-kind filter) for the semantic path.
+_SEMANTIC_SCOPES = {
+    "captured": (("event",), ("capture",)),
+    "facts": (("event",), ("fact",)),
+    "all": (("event", "conversation"), None),
+}
 
 
 def query_memory(ctx: ToolContext, tool_input: dict[str, Any]) -> str:
@@ -29,10 +46,17 @@ def query_memory(ctx: ToolContext, tool_input: dict[str, Any]) -> str:
 
     session = ctx.session
     results: list[str] = []
-    if scope in ("captured", "all"):
-        results += _search_captured(session, query, limit)
-    if scope in ("facts", "all"):
-        results += _search_facts(session, query, limit)
+
+    semantic_lines = None
+    if scope in _SEMANTIC_SCOPES:
+        semantic_lines = _semantic_search(ctx, query, scope, limit)
+    if semantic_lines is not None:
+        results += semantic_lines
+    else:
+        if scope in ("captured", "all"):
+            results += _search_captured(session, query, limit)
+        if scope in ("facts", "all"):
+            results += _search_facts(session, query, limit)
     if scope in ("tasks", "all"):
         results += _search_tasks(session, query, limit)
     if scope in ("blockers", "all"):
@@ -41,6 +65,34 @@ def query_memory(ctx: ToolContext, tool_input: dict[str, Any]) -> str:
     if not results:
         return f'No matches for "{query}" in scope "{scope}".'
     return "\n".join(results[:limit])
+
+
+def _semantic_search(
+    ctx: ToolContext, query: str, scope: str, limit: int
+) -> list[str] | None:
+    """Hybrid-ranked lines for the scope, or None -> caller uses keyword path."""
+    embedder = get_embedder(ctx.config)
+    if embedder is None:
+        return None
+    kinds, event_kinds = _SEMANTIC_SCOPES[scope]
+    try:
+        retriever = Retriever(embedder)
+        retriever.ensure_indexed(ctx.session)
+        if "conversation" in kinds:
+            retriever.ensure_conversations_indexed(ctx.session)
+        hits = retriever.rank_unified(ctx.session, query, kinds, event_kinds)
+    except RetrievalUnavailable as exc:
+        logger.warning("Semantic memory search unavailable, using keyword: %s", exc)
+        return None
+    return [_format_hit(hit) for hit in hits[:limit]]
+
+
+def _format_hit(hit: MemoryHit) -> str:
+    when = "today" if hit.age_days == 0 else f"{hit.age_days}d ago"
+    return (
+        f"[{hit.kind} #{hit.ref_id} · {hit.source} · {when} · "
+        f"sem {hit.semantic:.2f}] {hit.text}"
+    )
 
 
 def _to_fts_query(raw: str) -> str | None:

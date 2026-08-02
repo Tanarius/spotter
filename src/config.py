@@ -113,6 +113,10 @@ class Config:
     # Shared secret for Claude Code session notes (X-Spotter-Secret header).
     # Same refusal pattern: unset means /webhooks/session is not served.
     session_note_secret: str = ""
+    # Voyage AI key for semantic retrieval embeddings. Unset = retrieval
+    # degrades to keyword scoring (never an error).
+    voyage_api_key: str = ""
+    embed_model: str = "voyage-3.5-lite"
 
     @property
     def environment_label(self) -> str:
@@ -197,6 +201,8 @@ def load_config() -> Config:
         railway_env=railway_env,
         github_webhook_secret=_optional("GITHUB_WEBHOOK_SECRET"),
         session_note_secret=_optional("SESSION_NOTE_SECRET"),
+        voyage_api_key=_optional("VOYAGE_API_KEY"),
+        embed_model=_get("EMBED_MODEL", "voyage-3.5-lite"),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),
         default_model=_get("DEFAULT_MODEL", "claude-sonnet-4-6"),

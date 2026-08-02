@@ -264,6 +264,32 @@ class Event(Base):
     superseded_by: Mapped[int | None] = mapped_column(ForeignKey("events.id"))
 
 
+class EmbeddingRow(Base):
+    """Stored embedding vector for a memory row (phase 4D).
+
+    ``kind`` + ``ref_id`` point at the embedded row (events now; conversation
+    turns later). ``content_hash`` detects content drift so changed rows get
+    re-embedded; ``vector`` is packed little-endian float32. SQLite is the
+    vector store on purpose: single-user scale is a few hundred rows, and a
+    pure-Python dot product over them costs microseconds.
+    """
+
+    __tablename__ = "embeddings"
+    __table_args__ = (
+        Index("idx_embeddings_ref", "kind", "ref_id", unique=True),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str]  # event | conversation
+    ref_id: Mapped[int]
+    content_hash: Mapped[str]
+    model: Mapped[str]
+    dim: Mapped[int]
+    vector: Mapped[bytes]
+    created_at: Mapped[str] = mapped_column(server_default=_NOW)
+
+
 class Milestone(Base):
     """A step between a project's current state and its goal.
 
@@ -389,5 +415,6 @@ __all__ = [
     "JobApplication",
     "Milestone",
     "Event",
+    "EmbeddingRow",
     "FTS_STATEMENTS",
 ]

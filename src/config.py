@@ -119,6 +119,8 @@ class Config:
     embed_model: str = "voyage-3.5-lite"
     # Daily conditions-engine check (at most one nudge/day), HH:MM local.
     nudge_time: str = "13:00"
+    # Job-application target per week, shown as N / target on the dashboard.
+    weekly_application_target: int = 10
     # Groq Whisper model for Telegram voice messages.
     groq_whisper_model: str = "whisper-large-v3-turbo"
 
@@ -208,6 +210,7 @@ def load_config() -> Config:
         voyage_api_key=_optional("VOYAGE_API_KEY"),
         embed_model=_get("EMBED_MODEL", "voyage-3.5-lite"),
         nudge_time=_get("NUDGE_TIME", "13:00"),
+        weekly_application_target=int(_get("WEEKLY_APPLICATION_TARGET", "10")),
         groq_whisper_model=_get("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo"),
         anthropic_api_key=_require("ANTHROPIC_API_KEY"),
         groq_api_key=_optional("GROQ_API_KEY"),

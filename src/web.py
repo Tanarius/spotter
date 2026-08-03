@@ -167,6 +167,7 @@ class Dashboard:
         app.router.add_post("/captures/add", self._capture_add_action)
         app.router.add_post("/apps/add", self._app_add_action)
         app.router.add_post("/apps/status", self._app_status_action)
+        app.router.add_post("/apps/delete", self._app_delete_action)
         # Agent-backed endpoints: each runs a Brain tool-use turn off-loop and
         # returns JSON for the page's fetch calls.
         app.router.add_post("/api/next-action", self._api_next_action)
@@ -458,6 +459,23 @@ class Dashboard:
             app_row.updated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             return f"{app_row.company} — {app_row.role}: {old} -> {status}."
 
+    async def _app_delete_action(self, request: web.Request) -> web.Response:
+        form = await request.post()
+        app_id = _parse_id(form.get("id"))
+        if app_id is None:
+            raise web.HTTPBadRequest(text="missing or non-numeric application id")
+        result = await asyncio.to_thread(self._write_app_delete, app_id)
+        raise _redirect_with_message(result)
+
+    def _write_app_delete(self, app_id: int) -> str:
+        with self._session_factory() as session, session.begin():
+            app_row = session.get(JobApplication, app_id)
+            if app_row is None:
+                return f"No application #{app_id} found."
+            label = f"{app_row.company} — {app_row.role}"
+            session.delete(app_row)
+            return f"Application #{app_id} ({label}) deleted."
+
     # -- agent-backed endpoints --------------------------------------------------
 
     async def _api_next_action(self, request: web.Request) -> web.Response:
@@ -736,6 +754,7 @@ class Dashboard:
                     for c in captures
                 ],
                 "today_local": datetime.now(self._tz).strftime("%Y-%m-%d"),
+                "apps_target": self._config.weekly_application_target,
             }
 
     def _format_local(self, fire_at_utc: str) -> str:
@@ -781,28 +800,31 @@ def _strip_code_fences(text: str) -> str:
 def _pick_hero(session: Session) -> dict[str, Any] | None:
     """The focus-zone target: the best live task down the priority ladder.
 
-    Walks ACTIVE projects in priority order and returns the first one that has
-    a candidate task — per-project candidacy is still the tool's own
-    ``_next_task`` rule (is_next else oldest open), so the page can never
-    spotlight a task the agent wouldn't. Empty state only when no active
-    project has any live task.
+    Walks ACTIVE projects in priority order first; if none has a candidate,
+    falls through to PAUSED projects (labelled as such in the hero) — a task
+    on a paused project beats a dead empty state occupying the page's most
+    valuable block. Per-project candidacy is still the tool's own
+    ``_next_task`` rule (is_next else oldest open). None only when no project
+    anywhere has a live task.
     """
-    projects = session.scalars(
-        select(Project)
-        .where(Project.status == "active")
-        .order_by(Project.priority.desc(), Project.id)
-    ).all()
-    for project in projects:
-        task = _next_task(session, project.id)
-        if task is None:
-            continue
-        return {
-            "project_id": project.id,
-            "project": project.name,
-            "task_id": task.id,
-            "title": task.title,
-            "updated_at": task.updated_at,
-        }
+    for status in ("active", "paused"):
+        projects = session.scalars(
+            select(Project)
+            .where(Project.status == status)
+            .order_by(Project.priority.desc(), Project.id)
+        ).all()
+        for project in projects:
+            task = _next_task(session, project.id)
+            if task is None:
+                continue
+            return {
+                "project_id": project.id,
+                "project": project.name,
+                "project_status": status,
+                "task_id": task.id,
+                "title": task.title,
+                "updated_at": task.updated_at,
+            }
     return None
 
 
@@ -833,7 +855,7 @@ body {
 h1 { font-size: 16px; color: #f0f2f5; }
 h2 {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: #7d8590; margin: 14px 0 3px;
+  color: #7d8590; margin: 11px 0 3px;
 }
 .muted { color: #7d8590; }
 .small { font-size: 12px; }
@@ -845,6 +867,8 @@ button, input[type=submit] {
   border-radius: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer;
 }
 button.mini { padding: 2px 9px; font-size: 12px; line-height: 1.4; }
+button.mini.del { color: #8a929c; border-color: #2f333c; padding: 2px 7px; }
+button.mini.del:hover { color: #e8896f; border-color: #5c3a32; }
 button.accent { background: #16341f; color: #55e08c; border-color: #275c38; }
 select {
   background: #262a31; color: #d5d9df; border: 1px solid #343a43;
@@ -894,6 +918,8 @@ input[type=password], input[type=text], input[type=date] {
   display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 6px 2px;
   font-size: 13px; color: #7d8590; border-bottom: 1px solid #23262d;
 }
+.strip-alert { color: #d3b45e; }
+.strip-alert b { color: #e8c76a; }
 /* two-column layout; .single (sparse right column) stays one column and lets
    the work list use the full width */
 .grid { display: grid; grid-template-columns: 1fr; gap: 0 24px; }
@@ -901,15 +927,27 @@ input[type=password], input[type=text], input[type=date] {
 .grid.single { grid-template-columns: 1fr; }
 /* let columns shrink below content width so ellipsized rows can't overflow */
 .grid > div { min-width: 0; }
-/* compact rows */
-.projhead { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; padding-bottom: 1px; }
-.pname { font-weight: 600; color: #e8eaed; }
+/* compact rows. Hierarchy: tasks are content (bright), project headers are
+   containers (quiet), activity is news (accented). */
+.projhead { display: flex; align-items: baseline; gap: 8px; margin-top: 9px; padding-bottom: 1px; }
+.pname { font-weight: 600; font-size: 12.5px; color: #97a1af; }
+.projhead .badge { opacity: 0.8; }
 .pmeta {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding-bottom: 3px;
+  padding-bottom: 2px;
 }
 .pmeta b { color: #6fce93; font-weight: 600; }
-.pmeta.activity { color: #8fa3b8; }
+/* activity: the newest information on the page — accent bar, own tone */
+.activity {
+  border-left: 2px solid #35577a; padding: 1px 8px; margin: 1px 0 3px;
+  color: #a9c3dc; font-size: 12.5px; border-radius: 0 4px 4px 0;
+}
+/* clamp: wrap to two lines, then truncate; click to expand */
+.clamp {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; cursor: pointer;
+}
+.clamp.open { -webkit-line-clamp: unset; display: block; }
 .trow {
   display: flex; align-items: center; gap: 8px; padding: 3px 0;
   border-bottom: 1px solid #1c1f25;
@@ -918,6 +956,7 @@ input[type=password], input[type=text], input[type=date] {
 .ttitle {
   flex: 1 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
+  color: #e9ecf0; font-size: 14.5px;
 }
 /* On narrow screens the controls would squeeze the title to nothing: let the
    row wrap so the title keeps its own full-width line. */
@@ -965,7 +1004,7 @@ input[type=password], input[type=text], input[type=date] {
   border-radius: 8px; padding: 7px 11px; margin-bottom: 10px; font-size: 13px;
 }
 /* collapsibles */
-details { margin: 4px 0; }
+details { margin: 3px 0; }
 summary {
   cursor: pointer; color: #7d8590; font-size: 13px; list-style: none;
   -webkit-user-select: none; user-select: none;
@@ -1089,6 +1128,12 @@ if (hero) {
   });
   if (hero.dataset.generate === '1') agent('/api/next-action', {});
 }
+document.addEventListener('click', function (ev) {
+  const clamped = ev.target.closest('.clamp');
+  if (clamped && !ev.target.closest('a, button, select, input, form')) {
+    clamped.classList.toggle('open');
+  }
+});
 const chatForm = document.getElementById('chat-form');
 if (chatForm) {
   const chatLog = document.getElementById('chat-log');
@@ -1218,15 +1263,21 @@ def _render_hero(hero: dict[str, Any] | None) -> str:
     if hero is None:
         return (
             "<div class='hero'><div class='hero-label'>Next action</div>"
-            "<div class='hero-task muted'>No active project with a live task. Add "
-            "one below, or ask Spotter in chat what to start on.</div></div>"
+            "<div class='hero-task muted'>No open tasks on any project — active "
+            "or paused. Quick-add one below, or tell Spotter in chat what you're "
+            "working on and it will set one.</div></div>"
         )
     step = hero.get("step")
+    paused_label = (
+        " <span class='badge paused'>from a paused project</span>"
+        if hero.get("project_status") == "paused"
+        else ""
+    )
     return (
         f"<div class='hero' id='hero' data-generate='{'0' if step else '1'}' "
         f"data-stored='{html.escape(hero['title'], quote=True)}'>"
         "<div class='hero-label'>"
-        f"Next action · {html.escape(hero['project'])} "
+        f"Next action · {html.escape(hero['project'])}{paused_label} "
         f"<span class='hero-parent'>· task: {html.escape(hero['title'])}</span></div>"
         f"<div class='hero-task' id='hero-step'>{html.escape(step or hero['title'])}</div>"
         "<div class='hero-note' id='hero-note'></div>"
@@ -1250,16 +1301,30 @@ def _render_hero(hero: dict[str, Any] | None) -> str:
 
 
 def _render_strip(state: dict[str, Any]) -> str:
-    next_fire = state["triggers"][0]["fire_at_local"] if state["triggers"] else "nothing scheduled"
+    task_count = len(state["tasks"])
     stall_count = len(state["stalls"])
-    return (
-        "<div class='strip'>"
-        f"<span><b>{len(state['tasks'])}</b> open tasks</span>"
-        f"<span><b>{stall_count}</b> stall{'s' if stall_count != 1 else ''}</span>"
-        f"<span><b>{state['apps_recent_count']}</b> apps this week</span>"
-        f"<span>next trigger: <b>{html.escape(next_fire)}</b></span>"
-        "</div>"
+    target = state.get("apps_target") or 0
+    apps_text = (
+        f"<b>{state['apps_recent_count']}</b> / {target} apps this week"
+        if target
+        else f"<b>{state['apps_recent_count']}</b> apps this week"
     )
+    parts = [
+        f"<span><b>{task_count}</b> open task{'s' if task_count != 1 else ''}</span>",
+        f"<span>{apps_text}</span>",
+    ]
+    # Zero stalls is the normal state — only surface the counter when it bites.
+    if stall_count:
+        parts.insert(
+            1,
+            f"<span class='strip-alert'><b>{stall_count}</b> "
+            f"stall{'s' if stall_count != 1 else ''}</span>",
+        )
+    if state["triggers"]:
+        parts.append(
+            f"<span>next trigger: <b>{html.escape(state['triggers'][0]['fire_at_local'])}</b></span>"
+        )
+    return f"<div class='strip'>{''.join(parts)}</div>"
 
 
 def _render_quick_add(projects: list[dict[str, Any]]) -> str:
@@ -1338,7 +1403,11 @@ def _render_project_meta(project: dict[str, Any]) -> str:
 
 
 def _render_project_activity(project: dict[str, Any]) -> str:
-    """Latest ingested event for the project: ground truth about movement."""
+    """Latest ingested event for the project: ground truth about movement.
+
+    Visually distinct from static metadata (accent bar, not a subtitle), wraps
+    to two lines before clamping, expands on click, full text in the tooltip.
+    """
     activity = project.get("activity")
     if not activity:
         return ""
@@ -1351,7 +1420,7 @@ def _render_project_activity(project: dict[str, Any]) -> str:
     )
     text = f"{when}: {activity['summary']}{extra}"
     return (
-        f"<div class='pmeta muted small activity' title='{html.escape(text, quote=True)}'>"
+        f"<div class='activity clamp' title='{html.escape(text, quote=True)}'>"
         f"&#9889; {html.escape(text)}</div>"
     )
 
@@ -1378,7 +1447,8 @@ def _render_task_row(task: dict[str, Any]) -> str:
             next_badge += f" <span class='muted small' {tip}>{age}d</span>"
     return (
         "<div class='trow'>"
-        f"<span class='ttitle'>{html.escape(task['title'])}</span>{next_badge}"
+        f"<span class='ttitle' title='{html.escape(task['title'], quote=True)}'>"
+        f"{html.escape(task['title'])}</span>{next_badge}"
         f"<span class='badge {html.escape(task['status'])}'>{html.escape(task['status'])}</span>"
         "<form method='post' action='/tasks/status'>"
         f"<input type='hidden' name='id' value='{task['id']}'>"
@@ -1439,7 +1509,11 @@ def _render_apps(apps: list[dict[str, Any]]) -> str:
             f"<input type='hidden' name='id' value='{a['id']}'>"
             f"<select name='status' onchange='this.form.submit()'>{options}</select></form>"
             f"<span class='muted small' style='white-space:nowrap'>{html.escape(a['date_applied'])}</span>"
-            "</div>"
+            "<form method='post' action='/apps/delete' "
+            "onsubmit=\"return confirm('Delete this application?')\">"
+            f"<input type='hidden' name='id' value='{a['id']}'>"
+            "<button class='mini del' title='Delete this application'>&#10005;</button>"
+            "</form></div>"
         )
     return "".join(rows)
 

@@ -869,6 +869,26 @@ button, input[type=submit] {
 button.mini { padding: 2px 9px; font-size: 12px; line-height: 1.4; }
 button.mini.del { color: #8a929c; border-color: #2f333c; padding: 2px 7px; }
 button.mini.del:hover { color: #e8896f; border-color: #5c3a32; }
+/* task checkbox: the graphic anchor that says "this is an action" */
+button.check {
+  width: 19px; height: 19px; padding: 0; flex: none;
+  border-radius: 5px; background: transparent; color: transparent;
+  border: 1.5px solid #4a5261; font-size: 12px; line-height: 1;
+}
+button.check:hover { border-color: #55e08c; color: #55e08c; background: #16341f; }
+button.check.st-in_progress { border-color: #4a7fab; }
+button.check.st-waiting, button.check.st-paused { border-color: #a8904a; }
+/* status dots: one-glance state for applications */
+.dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: #5a6270; flex: none; vertical-align: baseline;
+}
+.dot.applied { background: #62b0e8; }
+.dot.responded { background: #6fce93; }
+.dot.screen { background: #7ec8d8; }
+.dot.interview { background: #d3b45e; }
+.dot.offer { background: #55e08c; }
+.dot.rejected, .dot.ghosted { background: #565d68; }
 button.accent { background: #16341f; color: #55e08c; border-color: #275c38; }
 select {
   background: #262a31; color: #d5d9df; border: 1px solid #343a43;
@@ -932,6 +952,13 @@ input[type=password], input[type=text], input[type=date] {
 .projhead { display: flex; align-items: baseline; gap: 8px; margin-top: 9px; padding-bottom: 1px; }
 .pname { font-weight: 600; font-size: 12.5px; color: #97a1af; }
 .projhead .badge { opacity: 0.8; }
+/* the rail: one project's content reads as a cluster, not list soup */
+.pgroup {
+  border-left: 2px solid #23262d; margin-left: 3px; padding-left: 10px;
+  margin-bottom: 4px;
+}
+.pgroup .trow { border-bottom: none; padding: 2px 0; }
+.pgroup .trow.task { padding: 3px 0; }
 .pmeta {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding-bottom: 2px;
@@ -959,10 +986,11 @@ input[type=password], input[type=text], input[type=date] {
   color: #e9ecf0; font-size: 14.5px;
 }
 /* On narrow screens the controls would squeeze the title to nothing: let the
-   row wrap so the title keeps its own full-width line. */
+   row wrap. The title claims most of line one (sharing it with the leading
+   checkbox/dot) and the controls drop to line two. */
 @media (max-width: 600px) {
   .trow { flex-wrap: wrap; }
-  .ttitle { flex-basis: 100%; white-space: normal; }
+  .ttitle { white-space: normal; flex: 1 1 0; min-width: 62%; }
 }
 .badge {
   font-size: 10.5px; padding: 1px 7px; border-radius: 9px;
@@ -998,6 +1026,8 @@ input[type=password], input[type=text], input[type=date] {
 .bubble.me { align-self: flex-end; background: #1d3a2a; color: #d9f2e2; }
 .bubble.bot { align-self: flex-start; background: #1c1f25; border: 1px solid #2a2e36; }
 .pipeline { font-size: 13px; color: #7d8590; padding: 2px 0 4px; }
+.pipeline .dot { margin-right: 4px; }
+.trow > .dot { margin-right: 2px; }
 .empty { color: #667080; font-style: italic; font-size: 13px; padding: 4px 0; }
 .toast {
   background: #14273a; color: #62b0e8; border: 1px solid #1f4159;
@@ -1199,8 +1229,7 @@ def _render_index(state: dict[str, Any], timezone_name: str, message: str = "") 
         _render_pipeline(state["apps"]),
         _render_app_add(state["today_local"]),
         _render_apps(state["apps"]),
-        f"<h2>Upcoming <span class='muted'>({html.escape(timezone_name)})</span></h2>",
-        _render_triggers(state["triggers"]),
+        _render_upcoming(state["triggers"], timezone_name),
         _render_captures(state["captures"]),
     ]
     # Sparse right column -> single column; the work list gets the full width.
@@ -1363,17 +1392,23 @@ def _render_work(projects: list[dict[str, Any]], tasks: list[dict[str, Any]]) ->
             f"<span class='badge {html.escape(p['status'])}'>{html.escape(p['status'])}</span>"
             f"<span class='muted small'>p{p['priority']} · {len(group)} open</span></div>"
         )
-        meta = _render_project_meta(p)
-        if meta:
-            parts.append(meta)
-        activity = _render_project_activity(p)
-        if activity:
-            parts.append(activity)
-        parts.extend(_render_task_row(t) for t in group)
+        # The rail groups one project's content into a visual cluster:
+        # metadata, then what HAPPENED (activity), then what's TO DO (tasks).
+        inner = (
+            _render_project_meta(p)
+            + _render_project_activity(p)
+            + "".join(_render_task_row(t) for t in group)
+        )
+        if inner:
+            parts.append(f"<div class='pgroup'>{inner}</div>")
     unlinked = by_project.pop(None, [])
     if unlinked:
         parts.append("<div class='projhead'><span class='pname muted'>No project</span></div>")
-        parts.extend(_render_task_row(t) for t in unlinked)
+        parts.append(
+            "<div class='pgroup'>"
+            + "".join(_render_task_row(t) for t in unlinked)
+            + "</div>"
+        )
     return "".join(parts)
 
 
@@ -1445,15 +1480,18 @@ def _render_task_row(task: dict[str, Any]) -> str:
             next_badge += f" <span class='badge stale' {tip}>{age}d &mdash; stalling?</span>"
         else:
             next_badge += f" <span class='muted small' {tip}>{age}d</span>"
+    # The leading checkbox is the task's graphic anchor: it makes the row read
+    # as an actionable item at a glance. Its border color carries the status
+    # (the text badge is gone — the dropdown already says it).
+    status_class = html.escape(task["status"])
     return (
-        "<div class='trow'>"
-        f"<span class='ttitle' title='{html.escape(task['title'], quote=True)}'>"
-        f"{html.escape(task['title'])}</span>{next_badge}"
-        f"<span class='badge {html.escape(task['status'])}'>{html.escape(task['status'])}</span>"
+        "<div class='trow task'>"
         "<form method='post' action='/tasks/status'>"
         f"<input type='hidden' name='id' value='{task['id']}'>"
         "<input type='hidden' name='status' value='done'>"
-        "<button class='mini accent' title='Mark done'>&#10003;</button></form>"
+        f"<button class='check st-{status_class}' title='Mark done'>&#10003;</button></form>"
+        f"<span class='ttitle' title='{html.escape(task['title'], quote=True)}'>"
+        f"{html.escape(task['title'])}</span>{next_badge}"
         "<form method='post' action='/tasks/status'>"
         f"<input type='hidden' name='id' value='{task['id']}'>"
         f"<select name='status' onchange='this.form.submit()'>{options}</select></form>"
@@ -1469,8 +1507,14 @@ def _render_pipeline(apps: list[dict[str, Any]]) -> str:
     for a in apps:
         counts[a["status"]] = counts.get(a["status"], 0) + 1
     funnel = ["applied", "responded", "screen", "interview", "offer"]
-    parts = [f"<b>{counts.get(s, 0)}</b> {s}" for s in funnel]
-    parts += [f"<b>{counts[s]}</b> {s}" for s in ("rejected", "ghosted") if counts.get(s)]
+    parts = [
+        f"<span class='dot {s}'></span><b>{counts.get(s, 0)}</b> {s}" for s in funnel
+    ]
+    parts += [
+        f"<span class='dot {s}'></span><b>{counts[s]}</b> {s}"
+        for s in ("rejected", "ghosted")
+        if counts.get(s)
+    ]
     return f"<div class='pipeline'>{' · '.join(parts)}</div>"
 
 
@@ -1502,9 +1546,10 @@ def _render_apps(apps: list[dict[str, Any]]) -> str:
         tooltip = f" title='{html.escape(' · '.join(tooltip_bits), quote=True)}'" if tooltip_bits else ""
         rows.append(
             f"<div class='trow'{tooltip}>"
+            f"<span class='dot {html.escape(a['status'])}' "
+            f"title='{html.escape(a['status'], quote=True)}'></span>"
             f"<span class='ttitle'>{html.escape(a['company'])} "
             f"<span class='muted'>— {html.escape(a['role'])}</span></span>"
-            f"<span class='badge {html.escape(a['status'])}'>{html.escape(a['status'])}</span>"
             "<form method='post' action='/apps/status'>"
             f"<input type='hidden' name='id' value='{a['id']}'>"
             f"<select name='status' onchange='this.form.submit()'>{options}</select></form>"
@@ -1548,6 +1593,18 @@ def _render_stalls(stalls: list[dict[str, Any]]) -> str:
         for s in stalls
     )
     return f"<h2>Stalls</h2>{rows}"
+
+
+def _render_upcoming(triggers: list[dict[str, Any]], timezone_name: str) -> str:
+    """Triggers demoted to a collapsed block; the summary carries the gist."""
+    if not triggers:
+        return ""
+    next_fire = triggers[0]["fire_at_local"]
+    return (
+        f"<details><summary>Upcoming ({len(triggers)} · next "
+        f"{html.escape(next_fire)} · {html.escape(timezone_name)})</summary>"
+        f"{_render_triggers(triggers)}</details>"
+    )
 
 
 def _render_triggers(triggers: list[dict[str, Any]]) -> str:
